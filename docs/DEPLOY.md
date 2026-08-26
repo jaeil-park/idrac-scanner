@@ -12,11 +12,13 @@ Dell iDRAC 스캐너를 다양한 환경에 배포하는 방법을 설명합니�
 4. [방법 B — Docker 단일 명령](#4-방법-b--docker-단일-명령)
 5. [방법 C — Portainer 스택](#5-방법-c--portainer-스택)
 6. [방법 D — 로컬 직접 실행 (개발용)](#6-방법-d--로컬-직접-실행-개발용)
-7. [Dell iDRAC Tools (racadm) 선택적 설치](#7-dell-idrac-tools-racadm-선택적-설치)
-8. [네트워크 요구사항](#8-네트워크-요구사항)
-9. [데이터 영속성](#9-데이터-영속성)
-10. [업데이트 방법](#10-업데이트-방법)
-11. [문제 해결](#11-문제-해결)
+7. [인증 설정 (선택)](#7-인증-설정-선택)
+8. [HTTPS 설정 (선택)](#8-https-설정-선택)
+9. [Dell iDRAC Tools (racadm) 선택적 설치](#9-dell-idrac-tools-racadm-선택적-설치)
+10. [네트워크 요구사항](#10-네트워크-요구사항)
+11. [데이터 영속성](#11-데이터-영속성)
+12. [업데이트 방법](#12-업데이트-방법)
+13. [문제 해결](#13-문제-해결)
 
 ---
 
@@ -220,7 +222,67 @@ python scanner.py
 
 ---
 
-## 7. Dell iDRAC Tools (racadm) 선택적 설치
+## 7. 인증 설정 (선택)
+
+웹 UI에 비밀번호 인증을 추가합니다. `AUTH_PASSWORD`가 비어 있으면 인증이 비활성화됩니다 (기존 방식 그대로).
+
+### .env 설정
+
+```bash
+# 웹 UI 로그인 계정 (기본 사용자명: admin)
+AUTH_USER=admin
+AUTH_PASSWORD=MySecretPassword!
+
+# Flask 세션 서명 키 — 임의의 긴 문자열 권장
+SECRET_KEY=$(openssl rand -hex 32)
+```
+
+### 동작 방식
+
+| 상태 | 동작 |
+|------|------|
+| `AUTH_PASSWORD` 미설정 | 인증 없음 (기존 동작) |
+| `AUTH_PASSWORD` 설정됨 | 모든 페이지 로그인 필요, API는 401 반환 |
+
+---
+
+## 8. HTTPS 설정 (선택)
+
+### 방법 1 — 기존 인증서 사용
+
+```bash
+SSL_CERTFILE=/data/certs/server.crt
+SSL_KEYFILE=/data/certs/server.key
+```
+
+인증서 파일을 Docker 볼륨 또는 bind-mount로 컨테이너에 제공합니다.
+
+```yaml
+volumes:
+  - ./certs:/data/certs:ro
+  - idrac_data:/data
+```
+
+### 방법 2 — 자체 서명 인증서 자동 생성
+
+```bash
+SSL_SELF_SIGNED=1
+```
+
+컨테이너 시작 시 OpenSSL로 자체 서명 인증서를 자동 생성합니다.  
+브라우저에서 보안 경고가 표시되지만 암호화는 작동합니다.
+
+### HTTPS 활성화 시 접속 주소
+
+```
+https://<호스트IP>:5010
+```
+
+> `PORT` 변수를 `443`으로 변경하면 기본 HTTPS 포트로 접속 가능합니다.
+
+---
+
+## 9. Dell iDRAC Tools (racadm) 선택적 설치
 
 racadm CLI 명령 프리셋을 사용하려면 Dell iDRAC Tools가 필요합니다.  
 없으면 **Redfish API 전용 모드**로 동작합니다 (대부분의 기능 사용 가능).
@@ -248,7 +310,7 @@ docker compose up -d
 
 ---
 
-## 8. 네트워크 요구사항
+## 10. 네트워크 요구사항
 
 | 항목 | 내용 |
 |------|------|
@@ -266,7 +328,7 @@ docker compose up -d
 
 ---
 
-## 9. 데이터 영속성
+## 11. 데이터 영속성
 
 장비 등록 정보, 자격증명, 프리셋 등은 SQLite DB에 저장됩니다.
 
@@ -291,7 +353,7 @@ docker restart idrac-scanner
 
 ---
 
-## 10. 업데이트 방법
+## 12. 업데이트 방법
 
 ### Docker Compose
 
@@ -313,7 +375,7 @@ docker stop idrac-scanner && docker rm idrac-scanner
 
 ---
 
-## 11. 문제 해결
+## 13. 문제 해결
 
 ### 스캔 결과가 없음
 

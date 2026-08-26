@@ -19,6 +19,14 @@ services:
       # iDRAC 폴백 자격증명 — .env 파일에 정의하거나 직접 입력
       # 형식: [["root","password1"],["admin","password2"]]
       - IDRAC_FALLBACK_CREDS=${IDRAC_FALLBACK_CREDS:-[["root","calvin"]]}
+      # 웹 UI 인증 (비어 있으면 인증 없음)
+      - AUTH_USER=${AUTH_USER:-admin}
+      - AUTH_PASSWORD=${AUTH_PASSWORD:-}
+      - SECRET_KEY=${SECRET_KEY:-}
+      # HTTPS — 인증서 경로를 지정하거나 SSL_SELF_SIGNED=1 로 자체 서명 인증서 자동 생성
+      - SSL_CERTFILE=${SSL_CERTFILE:-}
+      - SSL_KEYFILE=${SSL_KEYFILE:-}
+      - SSL_SELF_SIGNED=${SSL_SELF_SIGNED:-}
 
     env_file:
       - .env  # 선택 사항 — 존재하지 않아도 동작 (required: false는 Compose v2.24+ 필요)

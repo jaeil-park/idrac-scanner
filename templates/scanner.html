@@ -367,6 +367,7 @@
   <button class="f-btn"         onclick="setFilter('open',this)">포트 열린 장비</button>
   <button class="f-btn new-only" onclick="setFilter('new',this)">🆕 신규만</button>
   <button class="f-btn"         onclick="setFilter('known',this)">📌 등록 장비</button>
+  <button class="f-btn" style="margin-left:auto;background:var(--green);color:#fff;border-color:var(--green)" onclick="exportCSV()">⬇ CSV 내보내기</button>
 </div>
 <input class="search-inp" id="search" type="text" placeholder="IP, MAC, 포트, 레이블로 검색…" oninput="renderTable()">
 
@@ -504,6 +505,30 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 function saveScanResults() {
   try { sessionStorage.setItem('idrac_scan_hosts', JSON.stringify(hosts)); } catch(e) {}
+}
+
+function exportCSV() {
+  if (!hosts.length) { alert('스캔 결과가 없습니다.'); return; }
+  const cols = ['IP 주소','서비스 태그','모델','MAC 주소','열린 포트','iDRAC','Dell MAC','메모','스캔 방법'];
+  const rows = hosts.map(h => [
+    h.ip,
+    h.service_tag || '',
+    h.model || '',
+    h.mac || '',
+    (h.open_ports || []).join(' '),
+    h.is_idrac ? 'Y' : 'N',
+    h.is_dell  ? 'Y' : 'N',
+    (h.note || '').replace(/"/g, '""'),
+    h.method || ''
+  ]);
+  const csv = [cols, ...rows].map(r => r.map(v => `"${v}"`).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], {type: 'text/csv;charset=utf-8;'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const ts   = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  a.href = url; a.download = `idrac_scan_${ts}.csv`;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
 }
 
 function restoreScanResults() {

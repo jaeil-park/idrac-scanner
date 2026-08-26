@@ -7,6 +7,8 @@ iDRAC 스캐너 + 일괄 설정 관리
 
 import collections
 import concurrent.futures
+import functools
+import hashlib
 import time
 import ipaddress
 import json
@@ -30,7 +32,8 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import (Flask, Response, jsonify, redirect, render_template,
+                   request, session, stream_with_context, url_for)
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -311,6 +314,40 @@ def _seed_presets():
 
 
 app = Flask(__name__)
+
+# ── 인증 설정 ─────────────────────────────────────────────────────
+_SECRET_KEY   = os.environ.get("SECRET_KEY", "")
+app.secret_key = _SECRET_KEY.encode() if _SECRET_KEY else os.urandom(24)
+
+AUTH_USER     = os.environ.get("AUTH_USER", "admin")
+AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "")   # 비어 있으면 인증 비활성화
+
+
+def _auth_enabled() -> bool:
+    return bool(AUTH_PASSWORD)
+
+
+def require_auth(f):
+    """개별 라우트용 데코레이터 (before_request 로 전체 적용)."""
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        return f(*args, **kwargs)
+    return wrapper
+
+
+@app.before_request
+def _global_auth_check():
+    """AUTH_PASSWORD가 설정된 경우 모든 요청에 인증을 요구."""
+    if not _auth_enabled():
+        return None
+    if request.endpoint in ("login", "logout", "static"):
+        return None
+    if session.get("authenticated"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Unauthorized", "login": "/login"}), 401
+    return redirect(url_for("login", next=request.full_path))
+
 
 # ── 유틸 ──────────────────────────────────────────────────────────
 
@@ -893,6 +930,31 @@ def _run_execution(q: queue.Queue, payload: dict):
 
 # ── Flask 라우트 ──────────────────────────────────────────────────
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not _auth_enabled():
+        return redirect(url_for("index"))
+    error = None
+    if request.method == "POST":
+        user = request.form.get("username", "").strip()
+        pw   = request.form.get("password", "")
+        if user == AUTH_USER and pw == AUTH_PASSWORD:
+            session["authenticated"] = True
+            nxt = request.args.get("next") or url_for("index")
+            # 오픈 리다이렉트 방지: 상대 경로만 허용
+            if not nxt.startswith("/"):
+                nxt = url_for("index")
+            return redirect(nxt)
+        error = "아이디 또는 비밀번호가 올바르지 않습니다."
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.route("/")
 def index():
     return render_template("scanner.html")
@@ -1410,4 +1472,30 @@ def api_system_info():
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 5001))
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+
+    # HTTPS 설정: SSL_CERTFILE + SSL_KEYFILE 환경변수 또는 SSL_SELF_SIGNED=1
+    ssl_ctx = None
+    certfile = os.environ.get("SSL_CERTFILE", "")
+    keyfile  = os.environ.get("SSL_KEYFILE",  "")
+    if certfile and keyfile and os.path.exists(certfile) and os.path.exists(keyfile):
+        ssl_ctx = (certfile, keyfile)
+        print(f"[HTTPS] 인증서 로드: {certfile}")
+    elif os.environ.get("SSL_SELF_SIGNED", ""):
+        cert_path = "/tmp/idrac_cert.pem"
+        key_path  = "/tmp/idrac_key.pem"
+        if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+            try:
+                subprocess.run([
+                    "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                    "-keyout", key_path, "-out", cert_path,
+                    "-days", "3650", "-nodes",
+                    "-subj", "/CN=idrac-manager"
+                ], check=True, capture_output=True)
+                print("[HTTPS] 자체 서명 인증서 생성 완료")
+            except Exception as e:
+                print(f"[HTTPS] 인증서 생성 실패: {e}")
+        if os.path.exists(cert_path) and os.path.exists(key_path):
+            ssl_ctx = (cert_path, key_path)
+
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True,
+            ssl_context=ssl_ctx)
