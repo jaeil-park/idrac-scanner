@@ -10,6 +10,10 @@ Dell iDRAC 장비를 네트워크에서 자동으로 스캔하고 일괄 설정�
 - **장비 관리**: 등록/미등록 구분, 카테고리 태그, 자격증명 저장
 - **서브넷 계산기**: CIDR 범위 계산 및 스캔 범위 추가
 
+## 문서
+
+- [배포 가이드 (DEPLOY.md)](docs/DEPLOY.md) — Docker Compose / Portainer / 로컬 실행 등 전체 배포 방법
+
 ## 빠른 시작 (Docker Compose)
 
 ```bash
