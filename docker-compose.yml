@@ -1,6 +1,6 @@
 services:
   idrac-scanner:
-    image: ghcr.io/YOUR_GITHUB_USER/idrac-scanner:latest  # GitHub Actions로 빌드된 이미지
+    image: ghcr.io/jaeil-park/idrac-scanner:latest  # GitHub Actions로 빌드된 이미지
     # 로컬 빌드 사용 시: build: .
     container_name: idrac-scanner
     restart: unless-stopped
