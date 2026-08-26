@@ -1,0 +1,1553 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iDRAC 일괄 설정 관리</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0d1117;
+  --s:        #161b22;
+  --s2:       #1c2128;
+  --bdr:      #30363d;
+  --txt:      #e6edf3;
+  --muted:    #7d8590;
+  --accent:   #388bfd;
+  --green:    #3fb950;
+  --green-bg: #0d1f0d;
+  --green-bdr:#238636;
+  --yellow:   #d29922;
+  --red:      #f85149;
+  --purple:   #a371f7;
+}
+body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--txt); min-height:100vh; }
+
+/* ── NAV ─────────────────────────────────────────────────── */
+.nav { background:var(--s); border-bottom:1px solid var(--bdr); padding:0 20px; display:flex; align-items:center; gap:0; }
+.nav-brand { display:flex; align-items:center; gap:10px; padding:14px 0; margin-right:24px; font-weight:700; color:var(--txt); text-decoration:none; font-size:1rem; }
+.nav-brand .ico { background:linear-gradient(135deg,#1a7f37,#238636); border-radius:8px; width:32px; height:32px; display:flex; align-items:center; justify-content:center; font-size:18px; }
+.nav-tab { padding:14px 16px; color:var(--muted); text-decoration:none; font-size:.85rem; border-bottom:2px solid transparent; transition:color .15s, border-color .15s; }
+.nav-tab:hover { color:var(--txt); }
+.nav-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.nav-right { margin-left:auto; display:flex; align-items:center; gap:12px; }
+.badge { padding:3px 10px; border-radius:12px; font-size:.72rem; font-weight:600; }
+.badge-green { background:rgba(63,185,80,.15); color:var(--green); border:1px solid var(--green-bdr); }
+.badge-red   { background:rgba(248,81,73,.1);  color:var(--red);   border:1px solid #6e271d; }
+
+/* ── MAIN LAYOUT ─────────────────────────────────────────── */
+.workspace { display:grid; grid-template-columns:280px 1fr 380px; height:calc(100vh - 49px); }
+.panel { display:flex; flex-direction:column; border-right:1px solid var(--bdr); overflow:hidden; }
+.panel:last-child { border-right:none; }
+.panel-hdr {
+  background:var(--s2); border-bottom:1px solid var(--bdr);
+  padding:12px 16px; font-size:.78rem; text-transform:uppercase;
+  letter-spacing:.07em; color:var(--muted); display:flex; align-items:center; gap:8px; flex-shrink:0;
+}
+.panel-hdr span { color:var(--accent); font-weight:700; }
+.panel-body { flex:1; overflow-y:auto; padding:12px; }
+.panel-footer { background:var(--s2); border-top:1px solid var(--bdr); padding:10px 12px; flex-shrink:0; }
+
+/* ── SCROLLBAR ───────────────────────────────────────────── */
+::-webkit-scrollbar { width:5px; height:5px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--bdr); border-radius:3px; }
+
+/* ── BUTTONS ─────────────────────────────────────────────── */
+.btn { padding:8px 16px; border-radius:7px; border:none; font-size:.83rem; font-weight:600; cursor:pointer; transition:opacity .15s, transform .1s; white-space:nowrap; }
+.btn:active { transform:scale(.97); }
+.btn:disabled { opacity:.35; cursor:default; }
+.btn-primary  { background:var(--accent); color:#fff; }
+.btn-green    { background:var(--green);  color:#fff; }
+.btn-danger   { background:var(--red);    color:#fff; }
+.btn-ghost    { background:transparent; border:1px solid var(--bdr); color:var(--muted); }
+.btn-ghost:hover { border-color:var(--accent); color:var(--accent); }
+.btn-sm { padding:4px 10px; font-size:.74rem; }
+.btn-full { width:100%; justify-content:center; display:flex; align-items:center; gap:6px; }
+
+/* ── FORMS ───────────────────────────────────────────────── */
+.field { display:flex; flex-direction:column; gap:5px; margin-bottom:12px; }
+.field label { font-size:.74rem; color:var(--muted); }
+.field input, .field select, .field textarea {
+  background:var(--bg); border:1px solid var(--bdr); border-radius:7px;
+  padding:8px 10px; color:var(--txt); font-size:.85rem; outline:none;
+  transition:border-color .15s; font-family:inherit; width:100%;
+}
+.field input:focus, .field select:focus, .field textarea:focus { border-color:var(--accent); }
+.field textarea { resize:vertical; min-height:72px; font-family:'Cascadia Code','Courier New',monospace; font-size:.8rem; }
+.field input[type=password] { letter-spacing:.1em; }
+
+/* ── CARDS ───────────────────────────────────────────────── */
+.card { background:var(--s2); border:1px solid var(--bdr); border-radius:9px; padding:12px; margin-bottom:8px; cursor:pointer; transition:border-color .15s, background .15s; }
+.card:hover { border-color:var(--accent); background:rgba(56,139,253,.05); }
+.card.selected { border-color:var(--green); background:var(--green-bg); }
+.card-name { font-size:.88rem; font-weight:600; margin-bottom:4px; }
+.card-desc { font-size:.74rem; color:var(--muted); line-height:1.5; }
+.card-tags { display:flex; gap:4px; flex-wrap:wrap; margin-top:7px; }
+
+/* ── TAGS ────────────────────────────────────────────────── */
+.tag { display:inline-flex; align-items:center; padding:2px 7px; border-radius:4px; font-size:.68rem; font-weight:600; }
+.tag-time    { background:rgba(163,113,247,.15); color:var(--purple);  border:1px solid #4d3678; }
+.tag-network { background:rgba(56,139,253,.12);  color:var(--accent);  border:1px solid #1c4186; }
+.tag-user    { background:rgba(210,153,34,.12);  color:var(--yellow);  border:1px solid #735b10; }
+.tag-alert   { background:rgba(248,81,73,.1);    color:var(--red);     border:1px solid #6e271d; }
+.tag-power   { background:rgba(63,185,80,.1);    color:var(--green);   border:1px solid #238636; }
+.tag-bios    { background:rgba(125,133,144,.1);  color:var(--muted);   border:1px solid var(--bdr); }
+.tag-custom  { background:rgba(125,133,144,.1);  color:var(--muted);   border:1px solid var(--bdr); }
+.tag-redfish { background:rgba(56,139,253,.12);  color:var(--accent);  border:1px solid #1c4186; }
+.tag-racadm  { background:rgba(163,113,247,.15); color:var(--purple);  border:1px solid #4d3678; }
+.tag-both    { background:rgba(63,185,80,.1);    color:var(--green);   border:1px solid #238636; }
+
+/* ── TARGET LIST ─────────────────────────────────────────── */
+.target-item {
+  display:flex; align-items:center; gap:8px; padding:8px 10px;
+  border-radius:7px; border:1px solid var(--bdr); margin-bottom:5px;
+  background:var(--s2); cursor:pointer; transition:all .12s;
+}
+.target-item:hover { border-color:var(--accent); }
+.target-item.checked { border-color:var(--green); background:var(--green-bg); }
+.target-chk { width:16px; height:16px; accent-color:var(--green); cursor:pointer; flex-shrink:0; }
+.target-ip  { font-family:monospace; font-size:.88rem; font-weight:700; color:var(--accent); }
+.target-lbl { font-size:.72rem; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cred-dot   { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.cred-dot.has { background:var(--green); }
+.cred-dot.none { background:var(--bdr); }
+/* 카테고리 필터 */
+.cat-filters { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:7px; }
+.cat-chip { padding:3px 9px; border-radius:20px; border:1px solid var(--bdr); font-size:.7rem; cursor:pointer; background:transparent; color:var(--muted); transition:all .12s; white-space:nowrap; }
+.cat-chip:hover { border-color:var(--accent); color:var(--accent); }
+.cat-chip.active { font-weight:700; }
+.cat-chip[data-cat="all"].active      { background:rgba(56,139,253,.12); border-color:var(--accent); color:var(--accent); }
+.cat-chip[data-cat="idrac"].active    { background:rgba(35,134,54,.12);  border-color:#238636;       color:#3fb950; }
+.cat-chip[data-cat="infra"].active    { background:rgba(56,139,253,.1);  border-color:#388bfd;       color:#79c0ff; }
+.cat-chip[data-cat="test"].active     { background:rgba(210,153,34,.1);  border-color:#d29922;       color:#e3b341; }
+.cat-badge { display:inline-block; padding:1px 6px; border-radius:10px; font-size:.65rem; font-weight:600; white-space:nowrap; flex-shrink:0; }
+.quick-sel-row { display:flex; gap:5px; flex-wrap:wrap; margin-bottom:6px; }
+
+/* ── ENGINE SELECTOR ─────────────────────────────────────── */
+.engine-group { display:flex; gap:6px; }
+.eng-btn { flex:1; padding:7px 6px; border-radius:7px; border:1px solid var(--bdr); background:transparent; color:var(--muted); font-size:.78rem; cursor:pointer; text-align:center; transition:all .15s; }
+.eng-btn:hover { border-color:var(--accent); color:var(--accent); }
+.eng-btn.active-redfish { background:rgba(56,139,253,.15);  border-color:var(--accent);  color:var(--accent); }
+.eng-btn.active-racadm  { background:rgba(163,113,247,.15); border-color:var(--purple);  color:var(--purple); }
+.eng-btn.active-both    { background:rgba(63,185,80,.1);    border-color:var(--green);   color:var(--green);  }
+
+/* ── EXEC RESULT ─────────────────────────────────────────── */
+.result-item { border:1px solid var(--bdr); border-radius:8px; margin-bottom:8px; overflow:hidden; }
+.result-hdr  { display:flex; align-items:center; gap:8px; padding:9px 12px; background:var(--s2); cursor:pointer; }
+.result-hdr:hover { background:#1e2430; }
+.result-ip   { font-family:monospace; font-weight:700; color:var(--accent); font-size:.9rem; }
+.result-body { padding:10px 12px; display:none; }
+.result-body.open { display:block; }
+.step-row    { display:flex; gap:8px; padding:5px 0; border-bottom:1px solid #21282f; font-size:.76rem; align-items:flex-start; }
+.step-row:last-child { border-bottom:none; }
+.step-eng  { width:58px; flex-shrink:0; font-size:.68rem; font-weight:600; padding:2px 6px; border-radius:4px; text-align:center; }
+.step-eng.redfish { background:rgba(56,139,253,.15); color:var(--accent); }
+.step-eng.racadm  { background:rgba(163,113,247,.15); color:var(--purple); }
+.step-cmd  { flex:1; font-family:monospace; color:var(--muted); word-break:break-all; }
+.step-out  { flex:2; color:var(--txt); word-break:break-all; white-space:pre-wrap; }
+.step-ok   { flex-shrink:0; font-weight:700; }
+.step-ok.ok  { color:var(--green); }
+.step-ok.err { color:var(--red); }
+.pulse { animation:pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* ── MODAL ───────────────────────────────────────────────── */
+.overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:200; align-items:center; justify-content:center; }
+.overlay.show { display:flex; }
+.modal { background:var(--s); border:1px solid var(--bdr); border-radius:12px; padding:22px; width:440px; max-width:96vw; max-height:90vh; overflow-y:auto; animation:fadeIn .2s; }
+.modal h3 { font-size:.95rem; margin-bottom:16px; }
+.modal-btns { display:flex; gap:8px; justify-content:flex-end; margin-top:6px; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+
+/* ── TABS ────────────────────────────────────────────────── */
+.tabs { display:flex; border-bottom:1px solid var(--bdr); margin-bottom:10px; }
+.tab { padding:7px 12px; font-size:.78rem; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; transition:color .15s, border-color .15s; }
+.tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+/* ── MISC ────────────────────────────────────────────────── */
+.empty { text-align:center; padding:32px 16px; color:var(--muted); font-size:.82rem; }
+.search-inp { width:100%; background:var(--bg); border:1px solid var(--bdr); border-radius:7px; padding:8px 10px; color:var(--txt); font-size:.82rem; outline:none; transition:border-color .15s; margin-bottom:8px; }
+.search-inp:focus { border-color:var(--accent); }
+.divider { border:none; border-top:1px solid var(--bdr); margin:8px 0; }
+.info-box { background:rgba(56,139,253,.06); border:1px solid rgba(56,139,253,.2); border-radius:7px; padding:10px 12px; font-size:.77rem; color:var(--muted); line-height:1.6; margin-bottom:10px; }
+.var-note  { font-size:.7rem; color:var(--muted); margin-top:2px; }
+.cat-header { font-size:.7rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin:10px 0 5px; }
+.status-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid #1e2430; font-size:.82rem; }
+.status-row:last-child { border-bottom:none; }
+.spin { display:inline-block; width:12px; height:12px; border:2px solid var(--bdr); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; }
+@keyframes spin { to{transform:rotate(360deg)} }
+.history-item { border:1px solid var(--bdr); border-radius:7px; padding:10px 12px; margin-bottom:6px; cursor:pointer; }
+.history-item:hover { border-color:var(--accent); }
+.section-title { font-size:.78rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:8px; margin-top:4px; }
+
+/* ── PRESET EDITOR ───────────────────────────────────────── */
+.cmd-block { background:var(--bg); border:1px solid var(--bdr); border-radius:7px; padding:10px; margin-bottom:8px; }
+.cmd-block-hdr { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.var-block { background:var(--bg); border:1px solid var(--bdr); border-radius:7px; padding:10px; margin-bottom:6px; }
+
+/* ── MODE TOGGLE ─────────────────────────────────────────── */
+.mode-toggle { display:flex; background:var(--bg); border:1px solid var(--bdr); border-radius:8px; padding:3px; gap:3px; }
+.mode-btn { padding:5px 14px; border-radius:6px; border:none; font-size:.78rem; font-weight:600; cursor:pointer; background:transparent; color:var(--muted); transition:all .15s; }
+.mode-btn.active { background:var(--accent); color:#fff; }
+
+/* ── SCP ─────────────────────────────────────────────────── */
+.tag-scp { background:rgba(63,185,80,.1); color:var(--green); border:1px solid #238636; }
+.scp-xml-preview { background:var(--bg); border:1px solid var(--bdr); border-radius:7px; padding:8px 10px; font-size:.72rem; font-family:monospace; color:var(--muted); max-height:120px; overflow-y:auto; white-space:pre-wrap; margin-top:6px; }
+.comp-group { display:flex; gap:8px; flex-wrap:wrap; margin-top:5px; }
+.comp-chk { display:flex; align-items:center; gap:4px; padding:4px 10px; border-radius:5px; border:1px solid var(--bdr); cursor:pointer; font-size:.74rem; color:var(--muted); transition:all .12s; user-select:none; }
+.comp-chk:hover { border-color:var(--green); color:var(--green); }
+.comp-chk input[type="checkbox"] { accent-color:var(--green); width:13px; height:13px; cursor:pointer; }
+.comp-chk:has(input:checked) { background:rgba(63,185,80,.15); border-color:var(--green); color:var(--green); font-weight:700; }
+.scp-var-detected { font-size:.7rem; color:var(--yellow); margin-top:4px; }
+
+/* mobile fallback */
+@media(max-width:900px){
+  .workspace { grid-template-columns:1fr; height:auto; }
+  .panel { border-right:none; border-bottom:1px solid var(--bdr); max-height:45vh; }
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <a class="nav-brand" href="/">
+    <div class="ico">🖧</div>
+    iDRAC Manager
+  </a>
+  <a class="nav-tab" href="/">스캐너</a>
+  <a class="nav-tab active" href="/config">일괄 설정</a>
+  <div class="nav-right">
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="mode-btn-preset" onclick="setMode('preset')">프리셋</button>
+      <button class="mode-btn" id="mode-btn-scp" onclick="setMode('scp')">📋 SCP 프로파일</button>
+    </div>
+    <span id="racadm-badge" class="badge badge-red">racadm 확인 중…</span>
+  </div>
+</nav>
+
+<!-- 3-PANEL WORKSPACE -->
+<div class="workspace">
+
+  <!-- ── PANEL 1: 타겟 선택 ─────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-hdr">
+      타겟 iDRAC &nbsp;<span id="sel-count">0</span> / <span id="total-count">0</span>
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="toggleAll()">전체</button>
+    </div>
+    <div class="panel-body" id="target-panel">
+      <!-- 탭: 등록 장비 | IP 직접 입력 -->
+      <div class="tabs">
+        <div class="tab active" onclick="switchTargetTab('known',this)">등록 장비</div>
+        <div class="tab" onclick="switchTargetTab('manual',this)">직접 입력</div>
+      </div>
+
+      <!-- 등록 장비 탭 -->
+      <div id="tab-known">
+        <input class="search-inp" type="text" placeholder="IP, 레이블, 서비스태그 검색…" id="target-search" oninput="renderTargets()">
+        <!-- 카테고리 필터 -->
+        <div class="cat-filters" id="cat-filter-row">
+          <button class="cat-chip active" data-cat="all"   onclick="setCatFilter('all',this)">전체</button>
+          <button class="cat-chip"        data-cat="idrac" onclick="setCatFilter('idrac',this)">🟢 iDRAC</button>
+          <button class="cat-chip"        data-cat="infra" onclick="setCatFilter('infra',this)">🔵 인프라</button>
+          <button class="cat-chip"        data-cat="test"  onclick="setCatFilter('test',this)">🟡 테스트</button>
+        </div>
+        <!-- 빠른 선택 -->
+        <div class="quick-sel-row">
+          <button class="btn btn-ghost btn-sm" onclick="quickSelectCat('idrac')" title="iDRAC 카테고리 전체 선택">iDRAC 전체 선택</button>
+          <button class="btn btn-ghost btn-sm" onclick="quickSelectCat(null)"   title="현재 필터 전체 선택">필터 결과 선택</button>
+          <span id="cat-count-lbl" style="font-size:.7rem;color:var(--muted);margin-left:auto;align-self:center"></span>
+        </div>
+        <div id="target-list"><div class="empty">등록된 장비 없음<br><small>스캐너에서 장비를 먼저 등록하세요</small></div></div>
+      </div>
+
+      <!-- 직접 입력 탭 -->
+      <div id="tab-manual" style="display:none">
+        <div class="field">
+          <label>IP 주소 목록 (줄바꿈 구분)</label>
+          <textarea id="manual-ips" placeholder="192.168.1.28&#10;192.168.1.29&#10;192.168.1.30" style="min-height:140px"></textarea>
+        </div>
+        <button class="btn btn-ghost btn-full btn-sm" onclick="applyManualIps()">목록 적용</button>
+      </div>
+    </div>
+    <div class="panel-footer">
+      <div style="font-size:.74rem; color:var(--muted); margin-bottom:8px">
+        자격증명 — <span style="color:var(--green)">●</span> IP별 저장됨 &nbsp; <span style="color:var(--bdr)">●</span> 기본값(root/calvin)
+      </div>
+      <button class="btn btn-ghost btn-full btn-sm" onclick="openCredModal(null)">+ 공통 자격증명 설정</button>
+    </div>
+  </div>
+
+  <!-- ── PANEL 2: 프리셋 + 변수 ────────────────────────── -->
+  <div class="panel">
+    <div class="panel-hdr" id="panel2-hdr">프리셋 선택 &amp; 변수 설정</div>
+    <div class="panel-body" id="preset-panel-body">
+      <!-- 프리셋 탭 -->
+      <div class="tabs" id="cat-tabs">
+        <div class="tab active" onclick="filterCat('all',this)">전체</div>
+        <div class="tab" onclick="filterCat('time',this)">시간</div>
+        <div class="tab" onclick="filterCat('network',this)">네트워크</div>
+        <div class="tab" onclick="filterCat('user',this)">사용자</div>
+        <div class="tab" onclick="filterCat('alert',this)">알림</div>
+        <div class="tab" onclick="filterCat('bios',this)">BIOS</div>
+        <div class="tab" onclick="filterCat('power',this)">전원</div>
+        <div class="tab" onclick="filterCat('custom',this)">커스텀</div>
+      </div>
+
+      <input class="search-inp" type="text" id="preset-search" placeholder="프리셋 검색…" oninput="renderPresets()">
+      <div id="preset-list"></div>
+
+      <hr class="divider">
+
+      <!-- 선택된 프리셋 변수 폼 -->
+      <div id="var-section" style="display:none">
+        <div class="section-title" id="var-preset-name"></div>
+
+        <!-- 엔진 선택 -->
+        <div class="field" style="margin-bottom:10px">
+          <label>실행 엔진</label>
+          <div class="engine-group" id="engine-group">
+            <button class="eng-btn active-both" data-eng="both"    onclick="setEngine(this)">⚡ Redfish + racadm</button>
+            <button class="eng-btn"             data-eng="redfish" onclick="setEngine(this)">🌐 Redfish만</button>
+            <button class="eng-btn"             data-eng="racadm"  onclick="setEngine(this)">🖥 racadm만</button>
+          </div>
+        </div>
+
+        <div id="var-fields"></div>
+
+        <!-- 공통 자격증명 오버라이드 -->
+        <details style="margin-top:10px">
+          <summary style="font-size:.75rem; color:var(--muted); cursor:pointer; margin-bottom:8px">이번 실행에만 공통 자격증명 사용</summary>
+          <div id="common-cred-section">
+            <div class="field"><label>사용자명</label><input id="cc-user" value="root"></div>
+            <div class="field"><label>비밀번호</label><input id="cc-pass" type="password" placeholder="(각 IP별 저장값 사용)"></div>
+          </div>
+        </details>
+      </div>
+
+      <div id="no-preset" class="empty">위 프리셋을 클릭하세요</div>
+    </div>
+
+    <!-- ── SCP 컨텐츠 (모드 전환 시 표시) ── -->
+    <div class="panel-body" id="scp-content" style="display:none">
+      <div class="info-box">SCP 파일을 불러오거나 iDRAC에서 내보낸 후 여러 서버에 일괄 적용합니다.<br>파일 내 <code style="color:var(--yellow)">{{ '{{VAR}}' }}</code> 패턴은 적용 시 변수로 치환됩니다.</div>
+
+      <div id="scp-profile-list"><div class="empty">저장된 SCP 프로파일 없음</div></div>
+
+      <hr class="divider">
+      <!-- 선택된 프로파일 설정 -->
+      <div id="scp-var-section" style="display:none">
+        <div class="section-title" id="scp-profile-name"></div>
+
+        <div class="field" style="margin-bottom:8px">
+          <label>적용 컴포넌트 <span style="font-size:.68rem;color:var(--muted)">(미선택 시 ALL)</span></label>
+          <div class="comp-group" id="comp-group">
+            <label class="comp-chk"><input type="checkbox" value="IDRAC" onchange="updateSelectedComp()"> iDRAC</label>
+            <label class="comp-chk"><input type="checkbox" value="BIOS"  onchange="updateSelectedComp()"> BIOS</label>
+            <label class="comp-chk"><input type="checkbox" value="NIC"   onchange="updateSelectedComp()"> NIC</label>
+            <label class="comp-chk"><input type="checkbox" value="RAID"  onchange="updateSelectedComp()"> RAID</label>
+            <label class="comp-chk"><input type="checkbox" value="FC"    onchange="updateSelectedComp()"> FC</label>
+          </div>
+        </div>
+
+        <div class="field" style="margin-bottom:10px">
+          <label>종료 방식 (재부팅 필요 설정 시)</label>
+          <select id="scp-shutdown">
+            <option value="Graceful">Graceful (정상 종료)</option>
+            <option value="Forced">Forced (강제 종료)</option>
+            <option value="NoReboot">NoReboot (재부팅 안 함)</option>
+          </select>
+        </div>
+
+        <div id="scp-var-fields"></div>
+
+        <details style="margin-top:10px">
+          <summary style="font-size:.75rem; color:var(--muted); cursor:pointer; margin-bottom:8px">이번 실행에만 공통 자격증명 사용</summary>
+          <div class="field"><label>사용자명</label><input id="scp-cc-user" value="root"></div>
+          <div class="field"><label>비밀번호</label><input id="scp-cc-pass" type="password" placeholder="(각 IP별 저장값 사용)"></div>
+        </details>
+      </div>
+
+      <div id="scp-no-profile" class="empty" style="display:none">위 프로파일을 클릭하세요</div>
+    </div>
+
+    <div class="panel-footer" style="display:flex; gap:8px">
+      <!-- 프리셋 모드 버튼 -->
+      <div id="preset-footer-btns" style="display:flex;gap:8px;width:100%">
+        <button class="btn btn-ghost btn-sm" onclick="openPresetEditor(null)" style="flex:1">+ 프리셋 생성</button>
+        <button class="btn btn-green" id="exec-btn" onclick="runExecution()" disabled>▶ 실행</button>
+      </div>
+      <!-- SCP 모드 버튼 -->
+      <div id="scp-footer-btns" style="display:none;gap:8px;width:100%">
+        <button class="btn btn-ghost btn-sm" onclick="openScpEditor(null)" style="flex:1">+ 프로파일 생성</button>
+        <button class="btn btn-ghost btn-sm" onclick="openScpExportModal()">↓ iDRAC에서 가져오기</button>
+        <button class="btn btn-green" id="scp-exec-btn" onclick="runScpApply()" disabled>▶ SCP 적용</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PANEL 3: 실행 결과 ────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-hdr">
+      실행 결과
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="showHistoryModal()">이력</button>
+    </div>
+    <div class="panel-body" id="result-panel">
+      <div class="empty" id="result-empty">실행 버튼을 누르면 결과가 여기에 표시됩니다</div>
+      <div id="result-list"></div>
+    </div>
+    <div class="panel-footer" id="result-footer" style="display:none">
+      <div id="result-summary" style="font-size:.8rem; color:var(--muted)"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── 자격증명 모달 ──────────────────────────────────── -->
+<div class="overlay" id="cred-overlay">
+  <div class="modal">
+    <h3>자격증명 설정 — <span id="cred-modal-ip" style="color:var(--accent);font-family:monospace"></span></h3>
+    <input type="hidden" id="cred-modal-ip-val">
+    <div class="field"><label>사용자명</label><input id="cred-user" value="root"></div>
+    <div class="field"><label>비밀번호</label><input id="cred-pass" type="password" placeholder="비밀번호 입력"></div>
+    <div class="field"><label>메모 (선택)</label><input id="cred-note" placeholder="예: 서버실 iDRAC 공통 PW"></div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('cred-overlay')">취소</button>
+      <button class="btn btn-primary" onclick="saveCred()">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 프리셋 편집 모달 ───────────────────────────────── -->
+<div class="overlay" id="editor-overlay">
+  <div class="modal" style="width:600px">
+    <h3 id="editor-title">프리셋 생성</h3>
+    <input type="hidden" id="editor-id">
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px">
+      <div class="field" style="margin-bottom:0"><label>프리셋 이름</label><input id="ed-name" placeholder="NTP 서버 설정"></div>
+      <div class="field" style="margin-bottom:0">
+        <label>분류</label>
+        <select id="ed-cat">
+          <option value="time">시간</option><option value="network">네트워크</option>
+          <option value="user">사용자</option><option value="alert">알림</option>
+          <option value="bios">BIOS</option><option value="power">전원</option>
+          <option value="custom" selected>커스텀</option>
+        </select>
+      </div>
+    </div>
+    <div class="field" style="margin-top:10px"><label>설명</label><input id="ed-desc" placeholder="간단한 설명"></div>
+    <div class="field">
+      <label>엔진</label>
+      <select id="ed-engine">
+        <option value="both">Redfish + racadm (둘 다)</option>
+        <option value="redfish">Redfish만</option>
+        <option value="racadm">racadm만</option>
+      </select>
+    </div>
+
+    <hr class="divider">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
+      <div class="section-title" style="margin:0">변수 정의</div>
+      <button class="btn btn-ghost btn-sm" onclick="addVarField()">+ 변수 추가</button>
+    </div>
+    <div id="ed-vars"></div>
+
+    <hr class="divider">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
+      <div class="section-title" style="margin:0">명령 블록</div>
+      <div style="display:flex; gap:6px">
+        <button class="btn btn-ghost btn-sm" onclick="addCmdBlock('redfish')">+ Redfish</button>
+        <button class="btn btn-ghost btn-sm" onclick="addCmdBlock('racadm')">+ racadm</button>
+      </div>
+    </div>
+    <div id="ed-cmds"></div>
+
+    <div class="modal-btns" style="margin-top:10px">
+      <button class="btn btn-ghost" onclick="closeModal('editor-overlay')">취소</button>
+      <button class="btn btn-primary" onclick="savePreset()">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── SCP 프로파일 편집 모달 ────────────────────────── -->
+<div class="overlay" id="scp-editor-overlay">
+  <div class="modal" style="width:680px">
+    <h3 id="scp-editor-title">SCP 프로파일 생성</h3>
+    <input type="hidden" id="scp-editor-id">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="field" style="margin-bottom:0"><label>프로파일 이름</label><input id="scp-ed-name" placeholder="납품 서버 기본 설정"></div>
+      <div class="field" style="margin-bottom:0">
+        <label>기본 컴포넌트</label>
+        <select id="scp-ed-comp">
+          <option value="ALL">ALL (전체)</option>
+          <option value="IDRAC">iDRAC</option>
+          <option value="BIOS">BIOS</option>
+          <option value="NIC">NIC</option>
+          <option value="RAID">RAID</option>
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>설명</label><input id="scp-ed-desc" placeholder="납품 전 공통 iDRAC 설정 프로파일"></div>
+    <div class="field">
+      <label>SCP XML 내용 — <span style="color:var(--yellow)">{{ '{{VAR_NAME}}' }}</span> 형태로 변수 사용 가능</label>
+      <textarea id="scp-ed-content" style="min-height:220px;font-size:.72rem" placeholder="<SystemConfiguration ...>&#10;  <Component FQDD=&quot;iDRAC.Embedded.1&quot;>&#10;    <Attribute Name=&quot;NIC.1.DNSRacName&quot;>&#123;&#123;HOSTNAME&#125;&#125;</Attribute>&#10;  </Component>&#10;</SystemConfiguration>"></textarea>
+      <div class="scp-var-detected" id="scp-ed-vars-detected"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('scp-file-input').click()">📂 파일에서 불러오기</button>
+      <input type="file" id="scp-file-input" accept=".xml,.json" style="display:none" onchange="loadScpFile(this)">
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('scp-editor-overlay')">취소</button>
+      <button class="btn btn-primary" onclick="saveScpProfile()">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── SCP Export (iDRAC → 앱) 모달 ─────────────────── -->
+<div class="overlay" id="scp-export-overlay">
+  <div class="modal">
+    <h3>iDRAC에서 SCP 내보내기</h3>
+    <div class="info-box">기준 서버의 iDRAC에서 설정을 XML로 내보냅니다.<br>내보낸 후 서버 고유값(서비스 태그, MAC 등)을 <code style="color:var(--yellow)">{{ '{{VAR}}' }}</code>로 치환해 저장하세요.</div>
+    <div class="field"><label>iDRAC IP</label><input id="scp-exp-ip" placeholder="192.168.1.28"></div>
+    <div class="field"><label>사용자명</label><input id="scp-exp-user" value="root"></div>
+    <div class="field"><label>비밀번호</label><input id="scp-exp-pass" type="password"></div>
+    <div class="field">
+      <label>내보낼 컴포넌트 <span style="font-size:.68rem;color:var(--muted)">(미선택 시 ALL)</span></label>
+      <div class="comp-group" id="scp-exp-comp-group">
+        <label class="comp-chk"><input type="checkbox" value="IDRAC" checked> iDRAC</label>
+        <label class="comp-chk"><input type="checkbox" value="BIOS"  checked> BIOS</label>
+        <label class="comp-chk"><input type="checkbox" value="NIC"> NIC</label>
+        <label class="comp-chk"><input type="checkbox" value="RAID"> RAID</label>
+        <label class="comp-chk"><input type="checkbox" value="FC"> FC</label>
+      </div>
+    </div>
+    <div id="scp-exp-status" style="font-size:.78rem;color:var(--muted);margin-bottom:8px;display:none"></div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('scp-export-overlay')">취소</button>
+      <button class="btn btn-primary" id="scp-exp-btn" onclick="doScpExport()">내보내기 시작</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 이력 모달 ─────────────────────────────────────── -->
+<div class="overlay" id="history-overlay">
+  <div class="modal" style="width:640px; max-height:80vh">
+    <h3>실행 이력</h3>
+    <div id="history-list"><div class="empty">불러오는 중…</div></div>
+    <div class="modal-btns"><button class="btn btn-ghost" onclick="closeModal('history-overlay')">닫기</button></div>
+  </div>
+</div>
+
+<script>
+// ── 상태 ───────────────────────────────────────────────
+let knownDevices  = [];   // {ip, label, category, mac, service_tag, model, ...}
+let savedCreds    = {};   // ip → {username, note}
+let presets       = [];   // preset list from API
+let selectedIPs   = new Set();
+let manualIPs     = [];
+let targetMode    = 'known';  // known | manual
+let targetCatFilter = 'all';  // 등록 장비 카테고리 필터
+let selectedPreset = null;
+let currentCat    = 'all';
+let engineSel     = 'both';
+
+// ── 초기화 ─────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  await Promise.all([loadKnown(), loadCreds(), loadPresets(), checkSystem()]);
+
+  // 결과 패널 복원 (페이지 이탈 전 저장된 상태)
+  const savedHtml    = sessionStorage.getItem('config_result_html');
+  const savedSummary = sessionStorage.getItem('config_result_summary');
+  if (savedHtml) {
+    document.getElementById('result-empty').style.display = 'none';
+    document.getElementById('result-list').innerHTML = savedHtml;
+    document.getElementById('result-footer').style.display = '';
+    document.getElementById('result-summary').textContent = savedSummary || '';
+  }
+
+  // 스캐너에서 선택된 IP 자동 반영
+  const urlIps = new URLSearchParams(window.location.search).get('ips');
+  if (urlIps) {
+    const ipList = urlIps.split(',').map(s => s.trim()).filter(Boolean);
+    if (ipList.length) {
+      const tabs = document.querySelectorAll('#target-panel .tab');
+      const manualTab = tabs[tabs.length - 1];
+      switchTargetTab('manual', manualTab);
+      document.getElementById('manual-ips').value = ipList.join('\n');
+      applyManualIps();
+    }
+    history.replaceState(null, '', window.location.pathname);
+  }
+});
+
+async function checkSystem() {
+  try {
+    const r = await fetch('/api/system_info');
+    const d = await r.json();
+    const badge = document.getElementById('racadm-badge');
+    if (d.racadm_available) {
+      badge.textContent = 'racadm ✓';
+      badge.className = 'badge badge-green';
+      badge.title = d.racadm_path;
+    } else {
+      badge.textContent = 'racadm 없음';
+      badge.className = 'badge badge-red';
+      badge.title = 'Dockerfile에 Dell DRAC Tools 설치 필요';
+    }
+  } catch(e) {}
+}
+
+async function loadKnown() {
+  try {
+    const r = await fetch('/api/known');
+    knownDevices = await r.json();
+    document.getElementById('total-count').textContent = knownDevices.length;
+    renderTargets();
+  } catch(e) {}
+}
+
+async function loadCreds() {
+  try {
+    const r = await fetch('/api/credentials');
+    const list = await r.json();
+    savedCreds = {};
+    list.forEach(c => savedCreds[c.ip] = c);
+    renderTargets();
+  } catch(e) {}
+}
+
+async function loadPresets() {
+  try {
+    const r = await fetch('/api/presets');
+    presets = await r.json();
+    renderPresets();
+  } catch(e) {}
+}
+
+// 카테고리 메타
+const CAT_META = {
+  idrac:   {label:'iDRAC', color:'#3fb950', bg:'rgba(35,134,54,.15)'},
+  infra:   {label:'인프라',  color:'#79c0ff', bg:'rgba(56,139,253,.12)'},
+  test:    {label:'테스트',  color:'#e3b341', bg:'rgba(210,153,34,.12)'},
+  exclude: {label:'제외',   color:'#8b949e', bg:'rgba(72,79,88,.15)'},
+};
+
+function setCatFilter(cat, el) {
+  targetCatFilter = cat;
+  document.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  renderTargets();
+}
+
+function quickSelectCat(cat) {
+  const pool = cat
+    ? knownDevices.filter(d => d.category === cat)
+    : _filteredTargets();
+  pool.forEach(d => selectedIPs.add(d.ip));
+  renderTargets();
+}
+
+function _filteredTargets() {
+  const q = (document.getElementById('target-search')?.value || '').toLowerCase();
+  return knownDevices.filter(d => {
+    if (targetCatFilter !== 'all' && d.category !== targetCatFilter) return false;
+    if (!q) return true;
+    return d.ip.includes(q) ||
+      (d.label||'').toLowerCase().includes(q) ||
+      (d.service_tag||'').toLowerCase().includes(q) ||
+      (d.model||'').toLowerCase().includes(q);
+  });
+}
+
+// ── 타겟 렌더 ──────────────────────────────────────────
+function renderTargets() {
+  if (targetMode !== 'known') return;
+  const items = _filteredTargets();
+  const list = document.getElementById('target-list');
+
+  // 카운트 레이블
+  const countLbl = document.getElementById('cat-count-lbl');
+  if (countLbl) countLbl.textContent = `${items.length}개`;
+
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">등록된 장비 없음<br><small>스캐너에서 장비를 먼저 등록하세요</small></div>';
+    document.getElementById('sel-count').textContent = selectedIPs.size;
+    updateExecBtn();
+    return;
+  }
+  list.innerHTML = items.map(d => {
+    const chk = selectedIPs.has(d.ip);
+    const hasCred = !!savedCreds[d.ip];
+    const meta = CAT_META[d.category] || CAT_META.infra;
+    const badge = `<span class="cat-badge" style="background:${meta.bg};color:${meta.color};border:1px solid ${meta.color}">${meta.label}</span>`;
+    const svcTag = d.service_tag ? `<span style="font-family:monospace;font-size:.7rem;color:var(--accent);font-weight:700">${esc(d.service_tag)}</span>` : '';
+    const model  = d.model ? `<span style="font-size:.68rem;color:var(--muted)">${esc(d.model)}</span>` : '';
+    return `<div class="target-item ${chk?'checked':''}" onclick="toggleIP('${d.ip}',this)">
+      <input class="target-chk" type="checkbox" ${chk?'checked':''} onclick="event.stopPropagation()">
+      <div style="flex:1; min-width:0">
+        <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+          <span class="target-ip">${d.ip}</span>${badge}
+        </div>
+        ${d.label ? `<div class="target-lbl">${esc(d.label)}</div>` : ''}
+        ${(svcTag||model) ? `<div style="display:flex;gap:5px;align-items:center;margin-top:2px">${svcTag}${model}</div>` : ''}
+      </div>
+      <span class="cred-dot ${hasCred?'has':'none'}" title="${hasCred?'자격증명 저장됨':'기본값 사용'}"></span>
+      <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openCredModal('${d.ip}')" title="자격증명 설정">🔑</button>
+    </div>`;
+  }).join('');
+  document.getElementById('sel-count').textContent = selectedIPs.size;
+  updateExecBtn();
+}
+
+function toggleIP(ip, el) {
+  if (selectedIPs.has(ip)) selectedIPs.delete(ip);
+  else selectedIPs.add(ip);
+  renderTargets();
+}
+
+function toggleAll() {
+  const items = targetMode === 'known' ? _filteredTargets() : manualIPs.map(ip=>({ip}));
+  const allSel = items.every(d => selectedIPs.has(d.ip));
+  if (allSel) items.forEach(d => selectedIPs.delete(d.ip));
+  else items.forEach(d => selectedIPs.add(d.ip));
+  renderTargets();
+}
+
+function switchTargetTab(mode, el) {
+  targetMode = mode;
+  document.querySelectorAll('#target-panel .tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-known').style.display  = mode === 'known'  ? '' : 'none';
+  document.getElementById('tab-manual').style.display = mode === 'manual' ? '' : 'none';
+}
+
+function applyManualIps() {
+  const raw = document.getElementById('manual-ips').value;
+  manualIPs = raw.split('\n').map(s=>s.trim()).filter(s=>s && /^\d+\.\d+\.\d+\.\d+$/.test(s));
+  selectedIPs = new Set(manualIPs);
+  document.getElementById('sel-count').textContent  = selectedIPs.size;
+  document.getElementById('total-count').textContent = manualIPs.length;
+  updateExecBtn();
+  alert(`${manualIPs.length}개 IP 적용됨`);
+}
+
+// ── 프리셋 렌더 ────────────────────────────────────────
+const CAT_KR = {time:'시간', network:'네트워크', user:'사용자', alert:'알림', power:'전원', bios:'BIOS', custom:'커스텀'};
+
+function filterCat(cat, el) {
+  currentCat = cat;
+  document.querySelectorAll('#cat-tabs .tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  renderPresets();
+}
+
+function renderPresets() {
+  const q = document.getElementById('preset-search').value.toLowerCase();
+  let list = presets;
+  if (currentCat !== 'all') list = list.filter(p => p.category === currentCat);
+  if (q) list = list.filter(p => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q));
+
+  const el = document.getElementById('preset-list');
+  if (!list.length) { el.innerHTML = '<div class="empty">프리셋 없음</div>'; return; }
+
+  const byBuiltin = [list.filter(p=>p.builtin), list.filter(p=>!p.builtin)];
+
+  el.innerHTML = byBuiltin.map((grp, gi) => {
+    if (!grp.length) return '';
+    const header = gi === 0 ? '' : `<div class="cat-header">사용자 정의</div>`;
+    return header + grp.map(p => {
+      const sel = selectedPreset?.id === p.id;
+      const engTag = `<span class="tag tag-${p.engine}">${p.engine === 'both' ? 'Redfish+racadm' : p.engine}</span>`;
+      const catTag = `<span class="tag tag-${p.category}">${CAT_KR[p.category]||p.category}</span>`;
+      const editBtn = p.builtin ? '' :
+        `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openPresetEditor(${p.id})" title="편집">✏</button>
+         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deletePreset(${p.id})" title="삭제">🗑</button>`;
+      return `<div class="card ${sel?'selected':''}" onclick="selectPreset(${p.id})">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
+          <div class="card-name">${esc(p.name)}</div>
+          <div style="display:flex;gap:4px;flex-shrink:0">${editBtn}</div>
+        </div>
+        <div class="card-desc">${esc(p.description)}</div>
+        <div class="card-tags">${catTag} ${engTag}</div>
+      </div>`;
+    }).join('');
+  }).join('');
+}
+
+function selectPreset(id) {
+  selectedPreset = presets.find(p => p.id === id);
+  if (!selectedPreset) return;
+  renderPresets();
+  renderVarForm();
+  updateExecBtn();
+}
+
+function renderVarForm() {
+  const p = selectedPreset;
+  if (!p) return;
+  document.getElementById('no-preset').style.display = 'none';
+  document.getElementById('var-section').style.display = '';
+  document.getElementById('var-preset-name').textContent = p.name;
+
+  // 엔진 버튼 초기화
+  document.querySelectorAll('.eng-btn').forEach(b => {
+    b.className = 'eng-btn';
+    if (b.dataset.eng === engineSel) b.className = `eng-btn active-${engineSel}`;
+  });
+
+  // 변수 필드 렌더
+  const vf = document.getElementById('var-fields');
+  if (!p.variables || !p.variables.length) {
+    vf.innerHTML = '<div style="color:var(--muted);font-size:.78rem;margin-bottom:8px">이 프리셋은 변수가 없습니다.</div>';
+    return;
+  }
+  vf.innerHTML = p.variables.map(v => {
+    const req = v.required ? '<span style="color:var(--red)">*</span>' : '';
+    let inp = '';
+    if (v.type === 'select') {
+      const opts = (v.options||[]).map(o => `<option value="${esc(o)}" ${o===v.default?'selected':''}>${esc(o)}</option>`).join('');
+      inp = `<select id="var-${v.name}">${opts}</select>`;
+    } else if (v.type === 'textarea') {
+      inp = `<textarea id="var-${v.name}" rows="4">${esc(v.default||'')}</textarea>`;
+    } else {
+      inp = `<input id="var-${v.name}" type="${v.type||'text'}" value="${esc(v.default||'')}" placeholder="${esc(v.default||'')}">`;
+    }
+    return `<div class="field"><label>${esc(v.label)} ${req}</label>${inp}</div>`;
+  }).join('');
+}
+
+function setEngine(btn) {
+  engineSel = btn.dataset.eng;
+  document.querySelectorAll('.eng-btn').forEach(b => {
+    b.className = `eng-btn${b === btn ? ` active-${engineSel}` : ''}`;
+  });
+}
+
+function updateExecBtn() {
+  const hasTargets = selectedIPs.size > 0;
+  const hasPreset  = !!selectedPreset;
+  document.getElementById('exec-btn').disabled = !(hasTargets && hasPreset);
+}
+
+// ── 실행 ────────────────────────────────────────────────
+async function runExecution() {
+  if (!selectedPreset || selectedIPs.size === 0) return;
+
+  // 변수 수집
+  const vars = {};
+  (selectedPreset.variables || []).forEach(v => {
+    const el = document.getElementById(`var-${v.name}`);
+    if (el) vars[v.name] = el.value.trim();
+  });
+
+  // 필수 변수 검증
+  const missing = (selectedPreset.variables||[]).filter(v => v.required && !vars[v.name]);
+  if (missing.length) {
+    alert(`필수 변수를 입력하세요: ${missing.map(v=>v.label).join(', ')}`);
+    return;
+  }
+
+  const targets = [...selectedIPs];
+  const ccPass  = document.getElementById('cc-pass').value;
+  const useCc   = !!ccPass;
+  const payload  = {
+    preset_id: selectedPreset.id,
+    targets,
+    variables: vars,
+    engine: engineSel,
+    use_common_cred: useCc,
+    common_cred: useCc ? { username: document.getElementById('cc-user').value, password: ccPass } : {},
+  };
+
+  // UI 초기화
+  sessionStorage.removeItem('config_result_html');
+  sessionStorage.removeItem('config_result_summary');
+  document.getElementById('result-empty').style.display = 'none';
+  document.getElementById('result-list').innerHTML = '';
+  document.getElementById('result-footer').style.display = '';
+  document.getElementById('exec-btn').disabled = true;
+
+  const statusMap = {};
+  targets.forEach(ip => {
+    statusMap[ip] = 'pending';
+    appendResultItem(ip);
+  });
+  updateSummary(statusMap);
+
+  // Job 시작
+  const jr = await fetch('/api/execute', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  });
+  const { job_id } = await jr.json();
+
+  const es = new EventSource(`/api/execute/${job_id}/stream`);
+  es.onmessage = e => handleSseMessage(JSON.parse(e.data), es);
+  es.onerror   = () => { es.close(); document.getElementById('exec-btn').disabled = false; };
+}
+
+function appendResultItem(ip) {
+  const el = document.createElement('div');
+  el.className = 'result-item';
+  el.id = `res-${ip.replace(/\./g,'_')}`;
+  el.innerHTML = `
+    <div class="result-hdr" onclick="toggleResultBody('${ip}')">
+      <span class="spin" id="spin-${ip.replace(/\./g,'_')}"></span>
+      <span class="result-ip">${ip}</span>
+      <span id="status-${ip.replace(/\./g,'_')}" style="margin-left:auto;font-size:.8rem;color:var(--muted)">대기 중…</span>
+    </div>
+    <div class="result-body" id="body-${ip.replace(/\./g,'_')}"></div>`;
+  document.getElementById('result-list').appendChild(el);
+}
+
+function toggleResultBody(ip) {
+  const body = document.getElementById(`body-${ip.replace(/\./g,'_')}`);
+  body.classList.toggle('open');
+}
+
+function setItemStatus(ip, state) {
+  const key = ip.replace(/\./g,'_');
+  const spin = document.getElementById(`spin-${key}`);
+  const stat = document.getElementById(`status-${key}`);
+  if (state === 'running') {
+    spin.className = 'spin';
+    stat.textContent = '실행 중…'; stat.style.color = 'var(--accent)';
+  } else if (state === 'ok') {
+    spin.outerHTML = `<span id="spin-${key}" style="color:var(--green);font-weight:700">✓</span>`;
+    stat.textContent = '성공'; stat.style.color = 'var(--green)';
+    document.getElementById(`body-${key}`).classList.add('open');
+  } else {
+    const spinEl = document.getElementById(`spin-${key}`);
+    if (spinEl) spinEl.outerHTML = `<span id="spin-${key}" style="color:var(--red);font-weight:700">✗</span>`;
+    stat.textContent = '실패'; stat.style.color = 'var(--red)';
+    document.getElementById(`body-${key}`).classList.add('open');
+  }
+}
+
+function appendStep(ip, step) {
+  const body = document.getElementById(`body-${ip.replace(/\./g,'_')}`);
+  const div  = document.createElement('div');
+  div.className = 'step-row';
+  const okCls = step.ok ? 'ok' : 'err';
+  const okTxt = step.ok ? '✓' : '✗';
+  const desc  = step.engine === 'redfish'
+    ? `${step.endpoint||''} (${step.status||''})`
+    : (step.cmd || '');
+  const out   = step.output || step.response || step.error || '';
+  div.innerHTML = `
+    <span class="step-eng ${step.engine}">${step.engine}</span>
+    <span class="step-cmd">${esc(desc)}</span>
+    <span class="step-out">${esc(out)}</span>
+    <span class="step-ok ${okCls}">${okTxt}</span>`;
+  body.appendChild(div);
+}
+
+function updateSummary(statusMap) {
+  const vals  = Object.values(statusMap);
+  const ok    = vals.filter(v=>v==='ok').length;
+  const err   = vals.filter(v=>v==='err').length;
+  const total = vals.length;
+  document.getElementById('result-summary').innerHTML =
+    `완료: <span style="color:var(--green)">${ok}</span> / ${total} &nbsp;|&nbsp; 실패: <span style="color:var(--red)">${err}</span>`;
+}
+
+// ── 자격증명 모달 ───────────────────────────────────────
+function openCredModal(ip) {
+  const cred = ip ? (savedCreds[ip] || {}) : {};
+  document.getElementById('cred-modal-ip').textContent = ip || '공통';
+  document.getElementById('cred-modal-ip-val').value = ip || '';
+  document.getElementById('cred-user').value = cred.username || 'root';
+  document.getElementById('cred-pass').value = '';
+  document.getElementById('cred-note').value = cred.note || '';
+  document.getElementById('cred-overlay').classList.add('show');
+}
+
+async function saveCred() {
+  const ip   = document.getElementById('cred-modal-ip-val').value;
+  const user = document.getElementById('cred-user').value.trim();
+  const pass = document.getElementById('cred-pass').value;
+  const note = document.getElementById('cred-note').value.trim();
+  if (!user) { alert('사용자명을 입력하세요'); return; }
+
+  const body = ip
+    ? { ip, username: user, password: pass, note }
+    : { ip: '__common__', username: user, password: pass, note };
+
+  await fetch('/api/credentials', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+  });
+  await loadCreds();
+  closeModal('cred-overlay');
+}
+
+// ── 프리셋 편집기 ──────────────────────────────────────
+let edVarIdx = 0, edCmdIdx = 0;
+
+function openPresetEditor(id) {
+  edVarIdx = 0; edCmdIdx = 0;
+  document.getElementById('ed-vars').innerHTML = '';
+  document.getElementById('ed-cmds').innerHTML = '';
+
+  if (id) {
+    const p = presets.find(p => p.id === id);
+    if (!p) return;
+    document.getElementById('editor-title').textContent = '프리셋 편집';
+    document.getElementById('editor-id').value = id;
+    document.getElementById('ed-name').value   = p.name;
+    document.getElementById('ed-desc').value   = p.description;
+    document.getElementById('ed-cat').value    = p.category;
+    document.getElementById('ed-engine').value = p.engine;
+    (p.variables||[]).forEach(v => addVarField(v));
+    (p.commands||[]).forEach(c => addCmdBlock(c.engine, c));
+  } else {
+    document.getElementById('editor-title').textContent = '프리셋 생성';
+    document.getElementById('editor-id').value = '';
+    document.getElementById('ed-name').value   = '';
+    document.getElementById('ed-desc').value   = '';
+    document.getElementById('ed-cat').value    = 'custom';
+    document.getElementById('ed-engine').value = 'both';
+  }
+  document.getElementById('editor-overlay').classList.add('show');
+}
+
+function addVarField(v) {
+  const i = edVarIdx++;
+  const el = document.createElement('div');
+  el.className = 'var-block';
+  el.id = `var-blk-${i}`;
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 100px;gap:8px;margin-bottom:6px">
+      <div class="field" style="margin:0"><label>변수명 ({{ '{{...}}' }})</label><input id="v-name-${i}" value="${esc(v?.name||'')}" placeholder="NTP_SERVER"></div>
+      <div class="field" style="margin:0"><label>레이블</label><input id="v-label-${i}" value="${esc(v?.label||'')}" placeholder="NTP 서버 주소"></div>
+      <div class="field" style="margin:0"><label>타입</label>
+        <select id="v-type-${i}">
+          <option value="text" ${v?.type==='text'?'selected':''}>text</option>
+          <option value="password" ${v?.type==='password'?'selected':''}>password</option>
+          <option value="select" ${v?.type==='select'?'selected':''}>select</option>
+          <option value="textarea" ${v?.type==='textarea'?'selected':''}>textarea</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end">
+      <div class="field" style="margin:0"><label>기본값</label><input id="v-default-${i}" value="${esc(v?.default||'')}" placeholder="pool.ntp.org"></div>
+      <div class="field" style="margin:0"><label>선택지 (select용, 쉼표구분)</label><input id="v-opts-${i}" value="${esc((v?.options||[]).join(','))}" placeholder="옵션1,옵션2"></div>
+      <div style="display:flex;align-items:center;gap:6px;padding-bottom:1px">
+        <label style="font-size:.74rem;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" id="v-req-${i}" ${v?.required?'checked':''}> 필수
+        </label>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('var-blk-${i}').remove()">✕</button>
+      </div>
+    </div>`;
+  document.getElementById('ed-vars').appendChild(el);
+}
+
+function addCmdBlock(engine, c) {
+  const i = edCmdIdx++;
+  const el = document.createElement('div');
+  el.className = 'cmd-block';
+  el.id = `cmd-blk-${i}`;
+  const isRedfish = engine === 'redfish';
+  el.innerHTML = `
+    <div class="cmd-block-hdr">
+      <span class="tag tag-${engine}">${engine}</span>
+      <input type="hidden" id="c-eng-${i}" value="${engine}">
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="document.getElementById('cmd-blk-${i}').remove()">✕</button>
+    </div>
+    ${isRedfish ? `
+      <div class="field"><label>메서드</label>
+        <select id="c-method-${i}"><option value="GET">GET</option><option value="PATCH" selected>PATCH</option><option value="POST">POST</option><option value="DELETE">DELETE</option></select>
+      </div>
+      <div class="field"><label>엔드포인트</label><input id="c-endpoint-${i}" value="${esc(c?.endpoint||'/redfish/v1/Managers/iDRAC.Embedded.1/Attributes')}" placeholder="/redfish/v1/..."></div>
+      <div class="field"><label>JSON 본문 ({{ '{{변수}}' }} 사용 가능)</label><textarea id="c-body-${i}">${esc(c?.body_template||'{"Attributes":{}}')}</textarea></div>
+    ` : `
+      <div class="field"><label>racadm 명령어 (줄바꿈 구분, {{ '{{변수}}' }} 사용 가능)</label>
+        <textarea id="c-cmds-${i}">${esc((c?.commands||[]).join('\n'))}</textarea>
+      </div>
+    `}`;
+  if (c?.method) {
+    setTimeout(() => {
+      const el = document.getElementById(`c-method-${i}`);
+      if (el) el.value = c.method;
+    }, 0);
+  }
+  document.getElementById('ed-cmds').appendChild(el);
+}
+
+async function savePreset() {
+  const id   = document.getElementById('editor-id').value;
+  const name = document.getElementById('ed-name').value.trim();
+  if (!name) { alert('프리셋 이름을 입력하세요'); return; }
+
+  // 변수 수집
+  const variables = [];
+  document.querySelectorAll('[id^="v-name-"]').forEach(el => {
+    const i = el.id.split('-').pop();
+    const n = document.getElementById(`v-name-${i}`)?.value?.trim();
+    if (!n) return;
+    variables.push({
+      name:     n,
+      label:    document.getElementById(`v-label-${i}`)?.value || n,
+      type:     document.getElementById(`v-type-${i}`)?.value || 'text',
+      default:  document.getElementById(`v-default-${i}`)?.value || '',
+      options:  (document.getElementById(`v-opts-${i}`)?.value||'').split(',').map(s=>s.trim()).filter(Boolean),
+      required: document.getElementById(`v-req-${i}`)?.checked || false,
+    });
+  });
+
+  // 명령 수집
+  const commands = [];
+  document.querySelectorAll('[id^="c-eng-"]').forEach(el => {
+    const i   = el.id.split('-').pop();
+    const eng = el.value;
+    if (eng === 'redfish') {
+      commands.push({
+        engine:        'redfish',
+        method:        document.getElementById(`c-method-${i}`)?.value || 'PATCH',
+        endpoint:      document.getElementById(`c-endpoint-${i}`)?.value || '',
+        body_template: document.getElementById(`c-body-${i}`)?.value || '{}',
+      });
+    } else {
+      const raw = document.getElementById(`c-cmds-${i}`)?.value || '';
+      commands.push({ engine: 'racadm', commands: raw.split('\n').map(s=>s.trim()).filter(Boolean) });
+    }
+  });
+
+  const body = {
+    name,
+    description: document.getElementById('ed-desc').value.trim(),
+    category:    document.getElementById('ed-cat').value,
+    engine:      document.getElementById('ed-engine').value,
+    variables, commands,
+  };
+
+  const url    = id ? `/api/presets/${id}` : '/api/presets';
+  const method = id ? 'PUT' : 'POST';
+  await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  await loadPresets();
+  closeModal('editor-overlay');
+}
+
+async function deletePreset(id) {
+  if (!confirm('이 프리셋을 삭제할까요?')) return;
+  const r = await fetch(`/api/presets/${id}`, { method: 'DELETE' });
+  const d = await r.json();
+  if (d.error) { alert(d.error); return; }
+  if (selectedPreset?.id === id) { selectedPreset = null; document.getElementById('var-section').style.display='none'; document.getElementById('no-preset').style.display=''; }
+  await loadPresets();
+}
+
+// ── 이력 모달 ──────────────────────────────────────────
+async function showHistoryModal() {
+  document.getElementById('history-overlay').classList.add('show');
+  document.getElementById('history-list').innerHTML = '<div class="empty">불러오는 중…</div>';
+  try {
+    const r = await fetch('/api/exec_history?limit=30');
+    const list = await r.json();
+    if (!list.length) {
+      document.getElementById('history-list').innerHTML = '<div class="empty">실행 이력 없음</div>';
+      return;
+    }
+    document.getElementById('history-list').innerHTML = list.map(h => {
+      const results = h.results || {};
+      const ok  = Object.values(results).filter(r=>r.ok).length;
+      const err = Object.values(results).filter(r=>!r.ok).length;
+      const tgts = h.targets?.join(', ') || '';
+      const vars = Object.entries(h.variables||{}).map(([k,v])=>`${k}=${v}`).join(' ');
+      return `<div class="history-item">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-weight:700;font-size:.88rem">${esc(h.preset_name)}</span>
+          <span class="tag tag-${h.engine||'both'}">${h.engine||'both'}</span>
+          <span style="margin-left:auto;font-size:.72rem;color:var(--muted)">${h.executed_at}</span>
+        </div>
+        <div style="font-size:.75rem;color:var(--muted)">${esc(tgts)}</div>
+        ${vars ? `<div style="font-size:.72rem;color:var(--muted);margin-top:2px">${esc(vars)}</div>` : ''}
+        <div style="margin-top:6px;font-size:.78rem">
+          <span style="color:var(--green)">✓ ${ok}</span> &nbsp;
+          <span style="color:var(--red)">✗ ${err}</span>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('history-list').innerHTML = '<div class="empty">불러오기 실패</div>';
+  }
+}
+
+// ── 공통 유틸 ──────────────────────────────────────────
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// 모달 외부 클릭 닫기
+document.querySelectorAll('.overlay').forEach(o => {
+  o.addEventListener('click', e => { if (e.target === o) o.classList.remove('show'); });
+});
+
+// ════════════════════════════════════════════════════════
+//  MODE TOGGLE
+// ════════════════════════════════════════════════════════
+let currentMode = 'preset';
+
+function setMode(mode) {
+  currentMode = mode;
+  const isPreset = mode === 'preset';
+  document.getElementById('mode-btn-preset').classList.toggle('active', isPreset);
+  document.getElementById('mode-btn-scp').classList.toggle('active', !isPreset);
+  document.getElementById('panel2-hdr').textContent = isPreset ? '프리셋 선택 & 변수 설정' : 'SCP 프로파일';
+
+  document.getElementById('preset-panel-body').style.display = isPreset ? '' : 'none';
+  document.getElementById('scp-content').style.display       = isPreset ? 'none' : '';
+  document.getElementById('preset-footer-btns').style.display = isPreset ? 'flex' : 'none';
+  document.getElementById('scp-footer-btns').style.display    = isPreset ? 'none' : 'flex';
+
+  if (!isPreset) loadScpProfiles();
+}
+
+// ════════════════════════════════════════════════════════
+//  SCP 프로파일 목록
+// ════════════════════════════════════════════════════════
+let scpProfiles = [];
+let selectedScpProfile = null;
+let selectedComp = 'ALL';
+
+async function loadScpProfiles() {
+  try {
+    const r = await fetch('/api/scp_profiles');
+    scpProfiles = await r.json();
+    renderScpProfiles();
+  } catch(e) {
+    document.getElementById('scp-profile-list').innerHTML = '<div class="empty">불러오기 실패</div>';
+  }
+}
+
+function renderScpProfiles() {
+  const el = document.getElementById('scp-profile-list');
+  if (!scpProfiles.length) {
+    el.innerHTML = '<div class="empty">저장된 SCP 프로파일 없음<br><small>프로파일 생성 또는 iDRAC에서 가져오기</small></div>';
+    return;
+  }
+  el.innerHTML = scpProfiles.map(p => {
+    const sel = selectedScpProfile?.id === p.id;
+    return `<div class="card ${sel?'selected':''}" onclick="selectScpProfile(${p.id})">
+      <div style="display:flex;align-items:flex-start;gap:8px">
+        <div style="flex:1">
+          <div class="card-name">📋 ${esc(p.name)}</div>
+          ${p.description ? `<div class="card-desc">${esc(p.description)}</div>` : ''}
+          <div class="card-tags" style="margin-top:5px">
+            <span class="tag tag-scp">${p.component}</span>
+            <span style="font-size:.68rem;color:var(--muted)">${p.created_at?.substring(0,16)||''}</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openScpEditor(${p.id})">편집</button>
+          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteScpProfile(${p.id})">삭제</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function selectScpProfile(id) {
+  const r = await fetch(`/api/scp_profiles/${id}`);
+  selectedScpProfile = await r.json();
+  renderScpProfiles();
+
+  // 변수 자동 감지
+  const vars = detectScpVars(selectedScpProfile.content);
+  document.getElementById('scp-profile-name').textContent = '📋 ' + selectedScpProfile.name;
+  document.getElementById('scp-var-section').style.display = '';
+  document.getElementById('scp-no-profile').style.display = 'none';
+
+  // 컴포넌트 기본값 설정
+  setCompByValue(selectedScpProfile.component || 'ALL');
+
+  // 변수 필드 렌더
+  const fieldsEl = document.getElementById('scp-var-fields');
+  if (!vars.length) {
+    fieldsEl.innerHTML = '<div class="var-note" style="margin-bottom:8px">이 프로파일에 치환 변수 없음</div>';
+  } else {
+    fieldsEl.innerHTML = `<div class="section-title">변수 입력</div>` + vars.map(v =>
+      `<div class="field"><label>${esc(v)}</label><input id="scp-var-${v}" placeholder="${esc(v)}"></div>`
+    ).join('');
+  }
+
+  document.getElementById('scp-exec-btn').disabled = false;
+}
+
+function detectScpVars(xml) {
+  const matches = [...(xml||'').matchAll(/\{\{([A-Z0-9_]+)\}\}/g)];
+  return [...new Set(matches.map(m => m[1]))];
+}
+
+function updateSelectedComp() {
+  const checked = [...document.querySelectorAll('#comp-group input[type="checkbox"]:checked')].map(c => c.value);
+  selectedComp = checked.length ? checked.join(',') : 'ALL';
+}
+
+function setCompByValue(val) {
+  const vals = (val || 'ALL').split(',').map(v => v.trim());
+  document.querySelectorAll('#comp-group input[type="checkbox"]').forEach(c => {
+    c.checked = vals.includes(c.value);
+  });
+  selectedComp = val || 'ALL';
+}
+
+// ── SCP 적용 실행 ─────────────────────────────────────
+async function runScpApply() {
+  if (!selectedScpProfile) { alert('프로파일을 선택하세요'); return; }
+  const targets = getSelectedTargets();
+  if (!targets.length) { alert('타겟 iDRAC를 선택하세요'); return; }
+
+  // 변수 수집
+  const vars = detectScpVars(selectedScpProfile.content);
+  const variables = {};
+  for (const v of vars) {
+    const el = document.getElementById(`scp-var-${v}`);
+    if (el) variables[v] = el.value.trim();
+  }
+
+  const ccPass = document.getElementById('scp-cc-pass').value;
+  const useCommon = !!ccPass;
+  const commonCred = useCommon ? { username: document.getElementById('scp-cc-user').value, password: ccPass } : {};
+
+  const payload = {
+    profile_id: selectedScpProfile.id,
+    targets,
+    variables,
+    component: selectedComp,
+    shutdown_type: document.getElementById('scp-shutdown').value,
+    use_common_cred: useCommon,
+    common_cred: commonCred,
+  };
+
+  // 결과 패널 초기화
+  sessionStorage.removeItem('config_result_html');
+  sessionStorage.removeItem('config_result_summary');
+  document.getElementById('result-empty').style.display = 'none';
+  document.getElementById('result-list').innerHTML = '';
+  document.getElementById('result-footer').style.display = 'none';
+  document.getElementById('scp-exec-btn').disabled = true;
+
+  try {
+    const r = await fetch('/api/scp_apply', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    const { job_id, error } = await r.json();
+    if (error) { alert(error); document.getElementById('scp-exec-btn').disabled = false; return; }
+
+    const es = new EventSource(`/api/scp_apply/${job_id}/stream`);
+    // 프리셋 실행과 동일한 SSE 핸들러 재사용
+    es.onmessage = e => handleSseMessage(JSON.parse(e.data), es);
+    es.onerror   = () => { es.close(); document.getElementById('scp-exec-btn').disabled = false; };
+  } catch(err) {
+    alert(err.message);
+    document.getElementById('scp-exec-btn').disabled = false;
+  }
+}
+
+// ── SCP 프로파일 편집 모달 ────────────────────────────
+async function openScpEditor(id) {
+  document.getElementById('scp-editor-id').value = id || '';
+  document.getElementById('scp-editor-title').textContent = id ? 'SCP 프로파일 편집' : 'SCP 프로파일 생성';
+  document.getElementById('scp-ed-name').value = '';
+  document.getElementById('scp-ed-desc').value = '';
+  document.getElementById('scp-ed-content').value = '';
+  document.getElementById('scp-ed-comp').value = 'ALL';
+  document.getElementById('scp-ed-vars-detected').textContent = '';
+
+  if (id) {
+    const r = await fetch(`/api/scp_profiles/${id}`);
+    const p = await r.json();
+    document.getElementById('scp-ed-name').value    = p.name;
+    document.getElementById('scp-ed-desc').value    = p.description;
+    document.getElementById('scp-ed-content').value = p.content;
+    document.getElementById('scp-ed-comp').value    = p.component;
+    updateScpVarDetect();
+  }
+
+  document.getElementById('scp-editor-overlay').classList.add('show');
+}
+
+function updateScpVarDetect() {
+  const xml  = document.getElementById('scp-ed-content').value;
+  const vars = detectScpVars(xml);
+  const el   = document.getElementById('scp-ed-vars-detected');
+  el.textContent = vars.length ? '감지된 변수: ' + vars.map(v=>'{{' + v + '}}').join(', ') : '';
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('scp-ed-content')?.addEventListener('input', updateScpVarDetect);
+});
+
+async function saveScpProfile() {
+  const id   = document.getElementById('scp-editor-id').value;
+  const name = document.getElementById('scp-ed-name').value.trim();
+  const content = document.getElementById('scp-ed-content').value.trim();
+  if (!name || !content) { alert('이름과 XML 내용은 필수입니다'); return; }
+
+  const body = {
+    name, description: document.getElementById('scp-ed-desc').value,
+    content, component: document.getElementById('scp-ed-comp').value
+  };
+  const url    = id ? `/api/scp_profiles/${id}` : '/api/scp_profiles';
+  const method = id ? 'PUT' : 'POST';
+  const r      = await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const d      = await r.json();
+  if (d.error) { alert(d.error); return; }
+  closeModal('scp-editor-overlay');
+  await loadScpProfiles();
+}
+
+async function deleteScpProfile(id) {
+  if (!confirm('이 SCP 프로파일을 삭제할까요?')) return;
+  await fetch(`/api/scp_profiles/${id}`, { method: 'DELETE' });
+  if (selectedScpProfile?.id === id) {
+    selectedScpProfile = null;
+    document.getElementById('scp-var-section').style.display = 'none';
+    document.getElementById('scp-exec-btn').disabled = true;
+  }
+  await loadScpProfiles();
+}
+
+function loadScpFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById('scp-ed-content').value = e.target.result;
+    updateScpVarDetect();
+    if (!document.getElementById('scp-ed-name').value) {
+      document.getElementById('scp-ed-name').value = file.name.replace(/\.(xml|json)$/i, '');
+    }
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
+// ── SCP Export (iDRAC → 앱) ──────────────────────────
+function openScpExportModal() {
+  document.getElementById('scp-exp-ip').value   = '';
+  document.getElementById('scp-exp-user').value = 'root';
+  document.getElementById('scp-exp-pass').value = '';
+  document.getElementById('scp-exp-status').style.display = 'none';
+  document.getElementById('scp-exp-btn').disabled = false;
+  document.getElementById('scp-export-overlay').classList.add('show');
+}
+
+async function doScpExport() {
+  const ip   = document.getElementById('scp-exp-ip').value.trim();
+  const user = document.getElementById('scp-exp-user').value.trim();
+  const pass = document.getElementById('scp-exp-pass').value;
+  const compChecks = [...document.querySelectorAll('#scp-exp-comp-group input:checked')].map(c => c.value);
+  const comp = compChecks.length ? compChecks.join(',') : 'ALL';
+  if (!ip || !pass) { alert('IP와 비밀번호를 입력하세요'); return; }
+
+  const statusEl = document.getElementById('scp-exp-status');
+  statusEl.style.display = '';
+  statusEl.innerHTML = '<span class="spin"></span> iDRAC에서 내보내는 중… (최대 6분 소요)';
+  document.getElementById('scp-exp-btn').disabled = true;
+
+  try {
+    const r = await fetch('/api/scp_export', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ip, username: user, password: pass, component: comp })
+    });
+    const d = await r.json();
+    if (d.error) {
+      statusEl.innerHTML = `<span style="color:var(--red)">오류: ${esc(d.error)}</span>`;
+      document.getElementById('scp-exp-btn').disabled = false;
+      return;
+    }
+    // 성공 → 편집 모달로 XML 전달
+    closeModal('scp-export-overlay');
+    document.getElementById('scp-editor-id').value      = '';
+    document.getElementById('scp-editor-title').textContent = 'SCP 프로파일 생성 (내보낸 설정)';
+    document.getElementById('scp-ed-name').value        = `${ip} SCP (${comp})`;
+    document.getElementById('scp-ed-desc').value        = `${ip}에서 내보낸 ${comp} 설정`;
+    document.getElementById('scp-ed-content').value     = d.xml;
+    document.getElementById('scp-ed-comp').value        = comp;
+    updateScpVarDetect();
+    document.getElementById('scp-editor-overlay').classList.add('show');
+  } catch(err) {
+    statusEl.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`;
+    document.getElementById('scp-exp-btn').disabled = false;
+  }
+}
+
+// ── SSE 핸들러 공통화 (프리셋 + SCP 공유) ────────────
+function handleSseMessage(data, es) {
+  const ev = data.type || data.event;
+  if (ev === 'target_start') {
+    const ip  = data.ip;
+    const div = document.createElement('div');
+    div.className = 'result-item';
+    div.id = `ri-${ip.replaceAll('.','_')}`;
+    div.innerHTML = `
+      <div class="result-hdr" onclick="this.nextElementSibling.classList.toggle('open')">
+        <span class="spin pulse"></span>
+        <span class="result-ip">${esc(ip)}</span>
+        <span class="result-status" style="font-size:.74rem;color:var(--muted);margin-left:auto">실행 중…</span>
+      </div>
+      <div class="result-body"><div id="steps-${ip.replaceAll('.','_')}"></div></div>`;
+    document.getElementById('result-list').appendChild(div);
+  }
+  else if (ev === 'step_done') {
+    const step  = data.step;
+    const ipKey = data.ip.replaceAll('.','_');
+    const stepsEl = document.getElementById(`steps-${ipKey}`);
+    if (stepsEl) {
+      const isProgress = step.cmd && step.cmd.startsWith('진행 중');
+      let progEl = stepsEl.querySelector('.progress-row');
+      if (isProgress) {
+        if (!progEl) { progEl = document.createElement('div'); progEl.className='step-row progress-row'; stepsEl.appendChild(progEl); }
+        progEl.innerHTML = `<span class="step-eng scp">SCP</span><span class="step-cmd">${esc(step.cmd)}</span><span class="step-out" style="color:var(--muted)">${esc(step.output||'')}</span>`;
+      } else {
+        if (progEl) progEl.remove();
+        const eng = step.engine || 'scp';
+        stepsEl.insertAdjacentHTML('beforeend', `
+          <div class="step-row">
+            <span class="step-eng ${eng}">${eng.toUpperCase()}</span>
+            <span class="step-cmd">${esc(step.cmd||'')}</span>
+            <span class="step-out">${esc(step.output||'')}</span>
+            <span class="step-ok ${step.ok?'ok':'err'}">${step.ok?'✓':'✗'}</span>
+          </div>`);
+      }
+    }
+  }
+  else if (ev === 'target_done') {
+    const ipKey = data.ip.replaceAll('.','_');
+    const ri  = document.getElementById(`ri-${ipKey}`);
+    if (ri) {
+      const spin   = ri.querySelector('.spin');
+      const status = ri.querySelector('.result-status');
+      const steps  = [...ri.querySelectorAll('.step-row')];
+      const ok     = steps.every(s => s.querySelector('.step-ok.ok'));
+      if (spin) spin.remove();
+      if (status) { status.textContent = ok ? '✓ 완료' : '✗ 오류'; status.style.color = ok ? 'var(--green)' : 'var(--red)'; }
+      ri.querySelector('.result-body')?.classList.remove('open');
+    }
+  }
+  else if (ev === 'done') {
+    es.close();
+    document.getElementById('exec-btn').disabled = false;
+    document.getElementById('scp-exec-btn').disabled = false;
+    const footer = document.getElementById('result-footer');
+    footer.style.display = '';
+    const ts = data.ts || '';
+    document.getElementById('result-summary').textContent = `완료 ${ts}`;
+    // 결과 패널 상태 저장 (페이지 이탈 후 복원용)
+    sessionStorage.setItem('config_result_html', document.getElementById('result-list').innerHTML);
+    sessionStorage.setItem('config_result_summary', document.getElementById('result-summary').textContent);
+  }
+  else if (ev === 'error') {
+    es.close();
+    document.getElementById('exec-btn').disabled = false;
+    document.getElementById('scp-exec-btn').disabled = false;
+    document.getElementById('result-list').insertAdjacentHTML('beforeend',
+      `<div class="empty" style="color:var(--red)">${esc(data.msg)}</div>`);
+  }
+}
+</script>
+</body>
+</html>

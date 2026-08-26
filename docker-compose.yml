@@ -1,0 +1,36 @@
+services:
+  idrac-scanner:
+    image: ghcr.io/YOUR_GITHUB_USER/idrac-scanner:latest  # GitHub Actions로 빌드된 이미지
+    # 로컬 빌드 사용 시: build: .
+    container_name: idrac-scanner
+    restart: unless-stopped
+
+    # ARP 스캔은 호스트와 같은 L2 세그먼트 필요 → host 모드
+    network_mode: host
+
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=5010
+      - DB_PATH=/data/known_devices.db
+      # iDRAC 폴백 자격증명 — .env 파일에 정의하거나 직접 입력
+      # 형식: [["root","password1"],["admin","password2"]]
+      - IDRAC_FALLBACK_CREDS=${IDRAC_FALLBACK_CREDS:-[["root","calvin"]]}
+
+    env_file:
+      - .env  # 선택 사항 — 존재하지 않아도 동작 (required: false는 Compose v2.24+ 필요)
+
+    volumes:
+      - idrac_data:/data
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  idrac_data:

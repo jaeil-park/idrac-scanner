@@ -1,0 +1,33 @@
+# Dell iDRAC Tools — proprietary, do not commit
+Dell-iDRACTools*.tar.gz
+*.tar.gz
+
+# Database
+*.db
+*.sqlite3
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

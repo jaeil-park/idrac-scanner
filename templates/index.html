@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iDRAC IP 조회 — DHCP 모니터</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --border:    #2e3148;
+    --text:      #e2e6f0;
+    --muted:     #7a80a0;
+    --accent:    #4f8ef7;
+    --dell-bg:   #1a2e1a;
+    --dell-bdr:  #2e7d32;
+    --dell-text: #81c784;
+    --warn-bg:   #2e1a1a;
+    --warn-text: #ef9a9a;
+    --badge-bg:  #1c2340;
+  }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 24px 16px;
+  }
+
+  /* ── 헤더 ── */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .header-icon {
+    width: 42px; height: 42px;
+    background: var(--accent);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+  }
+  .header h1 { font-size: 1.4rem; font-weight: 700; }
+  .header p  { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+  /* ── 설정 패널 ── */
+  .config-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+  }
+  .config-panel h2 { font-size: 0.85rem; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .config-row {
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; }
+  .field label { font-size: 0.75rem; color: var(--muted); }
+  .field input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 8px 10px;
+    color: var(--text);
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color .2s;
+  }
+  .field input:focus { border-color: var(--accent); }
+
+  /* ── 버튼 ── */
+  .btn {
+    padding: 9px 18px;
+    border-radius: 8px;
+    border: none;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+    white-space: nowrap;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-ghost   { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn:disabled { opacity: .45; cursor: default; }
+
+  /* ── 상태 바 ── */
+  .status-bar {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .stat-badge {
+    background: var(--badge-bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 5px 12px;
+    font-size: 0.8rem;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .stat-badge .num { font-weight: 700; font-size: 1rem; color: var(--accent); }
+  .stat-badge.dell .num { color: var(--dell-text); }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-green  { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+  .dot-red    { background: #f44336; }
+  .dot-spin   { background: var(--accent); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+  .refresh-label { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
+
+  /* ── 필터 탭 ── */
+  .filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .filter-btn {
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .filter-btn.active, .filter-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .filter-btn.dell-btn.active {
+    background: var(--dell-bdr);
+    border-color: var(--dell-bdr);
+  }
+
+  /* ── 검색 ── */
+  .search-row { margin-bottom: 14px; }
+  .search-input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 14px;
+    color: var(--text);
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color .2s;
+  }
+  .search-input:focus { border-color: var(--accent); }
+
+  /* ── 테이블 ── */
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  thead tr { background: #12141e; }
+  thead th {
+    padding: 12px 16px;
+    text-align: left;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  tbody tr {
+    border-top: 1px solid var(--border);
+    transition: background .12s;
+  }
+  tbody tr:hover { background: #1e2235; }
+
+  tbody tr.dell-row {
+    background: var(--dell-bg);
+    border-left: 3px solid var(--dell-bdr);
+  }
+  tbody tr.dell-row:hover { background: #1f3320; }
+
+  td { padding: 11px 16px; vertical-align: middle; }
+  td.ip-cell {
+    font-family: 'Cascadia Code', 'Courier New', monospace;
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  td.ip-cell.dell-ip { color: var(--dell-text); }
+  td.mac-cell {
+    font-family: 'Cascadia Code', 'Courier New', monospace;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  td.host-cell { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: 5px;
+    font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+  }
+  .tag-dell {
+    background: rgba(46,125,50,.25);
+    color: var(--dell-text);
+    border: 1px solid var(--dell-bdr);
+  }
+  .tag-copy {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer; padding: 3px 7px;
+    border-radius: 5px; font-size: 0.72rem;
+  }
+  .tag-copy:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── 알림 배너 ── */
+  .alert {
+    border-radius: 9px; padding: 12px 16px;
+    font-size: 0.85rem; margin-bottom: 14px;
+    display: none;
+  }
+  .alert.show { display: block; }
+  .alert-error { background: var(--warn-bg); border: 1px solid #c62828; color: var(--warn-text); }
+  .alert-info  { background: var(--badge-bg); border: 1px solid var(--border); color: var(--muted); }
+
+  /* ── 빈 상태 ── */
+  .empty { text-align: center; padding: 48px 16px; color: var(--muted); }
+  .empty .ico { font-size: 2.5rem; margin-bottom: 10px; }
+
+  /* ── iDRAC 하이라이트 카드 ── */
+  .idrac-cards { margin-bottom: 20px; }
+  .idrac-cards h2 { font-size: 0.85rem; color: var(--dell-text); margin-bottom: 10px; text-transform: uppercase; letter-spacing: .06em; }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+  .idrac-card {
+    background: var(--dell-bg);
+    border: 1px solid var(--dell-bdr);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .idrac-card .card-ip {
+    font-size: 1.25rem; font-weight: 700;
+    font-family: 'Cascadia Code', monospace;
+    color: var(--dell-text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .idrac-card .card-mac { font-size: 0.75rem; color: var(--muted); font-family: monospace; }
+  .idrac-card .card-host { font-size: 0.85rem; color: var(--text); }
+  .copy-ip-btn {
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 4px 10px;
+    background: rgba(46,125,50,.3);
+    border: 1px solid var(--dell-bdr);
+    border-radius: 6px;
+    color: var(--dell-text);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .copy-ip-btn:hover { background: rgba(46,125,50,.5); }
+
+  /* ── 자동 새로고침 토글 ── */
+  .toggle-row { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+  .toggle { position: relative; width: 36px; height: 20px; }
+  .toggle input { display: none; }
+  .toggle-slider {
+    position: absolute; inset: 0; border-radius: 20px;
+    background: var(--border); cursor: pointer; transition: background .2s;
+  }
+  .toggle-slider::before {
+    content: ""; position: absolute;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; top: 3px; left: 3px; transition: transform .2s;
+  }
+  .toggle input:checked + .toggle-slider { background: var(--accent); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+  .toggle-label { font-size: 0.78rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-icon">🖧</div>
+  <div>
+    <h1>iDRAC IP 조회 &mdash; DHCP 모니터</h1>
+    <p>ipTIME DHCP 테이블에서 Dell / iDRAC 장비 IP를 자동 식별합니다</p>
+  </div>
+</div>
+
+<!-- 설정 패널 -->
+<div class="config-panel">
+  <h2>라우터 접속 설정</h2>
+  <div class="config-row">
+    <div class="field">
+      <label>라우터 IP</label>
+      <input id="cfg-url" type="text" value="http://192.168.0.1" placeholder="http://192.168.0.1">
+    </div>
+    <div class="field" style="max-width:130px">
+      <label>계정</label>
+      <input id="cfg-user" type="text" value="admin" placeholder="admin">
+    </div>
+    <div class="field" style="max-width:160px">
+      <label>비밀번호</label>
+      <input id="cfg-pass" type="password" placeholder="••••••••">
+    </div>
+    <button class="btn btn-primary" onclick="loadHosts()" id="scan-btn">🔍 스캔</button>
+    <div class="toggle-row">
+      <label class="toggle">
+        <input type="checkbox" id="auto-toggle" checked>
+        <span class="toggle-slider"></span>
+      </label>
+      <span class="toggle-label">자동 새로고침 (30s)</span>
+    </div>
+  </div>
+</div>
+
+<!-- 알림 배너 -->
+<div class="alert alert-error" id="err-banner"></div>
+
+<!-- iDRAC 요약 카드 -->
+<div class="idrac-cards" id="dell-cards-section" style="display:none">
+  <h2>🟢 발견된 Dell / iDRAC 장비</h2>
+  <div class="card-grid" id="dell-cards"></div>
+</div>
+
+<!-- 상태 바 -->
+<div class="status-bar">
+  <div class="stat-badge">
+    <span class="dot" id="conn-dot" style="background:var(--border)"></span>
+    <span id="conn-label" style="color:var(--muted)">대기 중</span>
+  </div>
+  <div class="stat-badge">총 <span class="num" id="total-count">—</span> 대</div>
+  <div class="stat-badge dell"><span class="num" id="dell-count">—</span> Dell</div>
+  <span class="refresh-label" id="updated-label"></span>
+</div>
+
+<!-- 필터 + 검색 -->
+<div class="filter-row">
+  <button class="filter-btn active" data-filter="all"  onclick="setFilter('all',this)">전체</button>
+  <button class="filter-btn dell-btn" data-filter="dell" onclick="setFilter('dell',this)">Dell / iDRAC만</button>
+  <button class="filter-btn" data-filter="other" onclick="setFilter('other',this)">기타 장비</button>
+</div>
+<div class="search-row">
+  <input class="search-input" id="search" type="text" placeholder="IP, MAC, 호스트명으로 검색…" oninput="renderTable()">
+</div>
+
+<!-- 테이블 -->
+<div class="table-wrap">
+  <table id="hosts-table">
+    <thead>
+      <tr>
+        <th>IP 주소</th>
+        <th>MAC 주소</th>
+        <th>호스트명</th>
+        <th>연결 유형</th>
+        <th>구분</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="hosts-body">
+      <tr><td colspan="6"><div class="empty"><div class="ico">📡</div>스캔 버튼을 눌러 장비를 조회하세요</div></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+let allHosts = [];
+let currentFilter = 'all';
+let autoTimer = null;
+
+// ── 필터 ─────────────────────────────────────────────────────
+function setFilter(f, el) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderTable();
+}
+
+// ── 호스트 로드 ───────────────────────────────────────────────
+async function loadHosts() {
+  const btn = document.getElementById('scan-btn');
+  const dot = document.getElementById('conn-dot');
+  const lbl = document.getElementById('conn-label');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 조회 중…';
+  dot.className = 'dot dot-spin';
+  lbl.style.color = 'var(--accent)';
+  lbl.textContent = '연결 중…';
+  hideBanner();
+
+  const url  = encodeURIComponent(document.getElementById('cfg-url').value.trim());
+  const user = encodeURIComponent(document.getElementById('cfg-user').value.trim());
+  const pass = encodeURIComponent(document.getElementById('cfg-pass').value);
+
+  try {
+    const res  = await fetch(`/api/hosts?url=${url}&user=${user}&pass=${pass}`);
+    const data = await res.json();
+
+    if (data.error) {
+      showBanner(data.error);
+      dot.className = 'dot dot-red';
+      lbl.style.color = 'var(--warn-text)';
+      lbl.textContent = '오류';
+    } else {
+      allHosts = data.hosts || [];
+      document.getElementById('total-count').textContent = data.total;
+      document.getElementById('dell-count').textContent  = data.dell_count;
+      document.getElementById('updated-label').textContent = '마지막 업데이트: ' + data.updated;
+      dot.className = 'dot dot-green';
+      lbl.style.color = 'var(--dell-text)';
+      lbl.textContent = '연결됨';
+      renderDellCards();
+      renderTable();
+    }
+  } catch (e) {
+    showBanner('서버 오류: ' + e.message);
+    dot.className = 'dot dot-red';
+    lbl.style.color = 'var(--warn-text)';
+    lbl.textContent = '연결 실패';
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🔍 스캔';
+}
+
+// ── Dell 카드 ─────────────────────────────────────────────────
+function renderDellCards() {
+  const section = document.getElementById('dell-cards-section');
+  const grid    = document.getElementById('dell-cards');
+  const dells   = allHosts.filter(h => h.is_dell);
+
+  if (!dells.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  grid.innerHTML = dells.map(h => `
+    <div class="idrac-card">
+      <div class="card-ip">
+        ${h.ip}
+        <span class="tag tag-dell">Dell</span>
+      </div>
+      <div class="card-mac">${h.mac}</div>
+      <div class="card-host">${h.hostname || '<span style="color:var(--muted)">—</span>'}</div>
+      <div class="card-mac">${h.conn_type || ''}</div>
+      <button class="copy-ip-btn" onclick="copyText('${h.ip}',this)">📋 IP 복사</button>
+    </div>
+  `).join('');
+}
+
+// ── 테이블 렌더 ───────────────────────────────────────────────
+function renderTable() {
+  const q = document.getElementById('search').value.trim().toLowerCase();
+  const tbody = document.getElementById('hosts-body');
+
+  let hosts = allHosts;
+
+  if (currentFilter === 'dell')  hosts = hosts.filter(h => h.is_dell);
+  if (currentFilter === 'other') hosts = hosts.filter(h => !h.is_dell);
+
+  if (q) {
+    hosts = hosts.filter(h =>
+      h.ip.includes(q) ||
+      h.mac.toLowerCase().includes(q) ||
+      h.hostname.toLowerCase().includes(q)
+    );
+  }
+
+  if (!hosts.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><div class="ico">🔍</div>조건에 맞는 장비가 없습니다</div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = hosts.map(h => `
+    <tr class="${h.is_dell ? 'dell-row' : ''}">
+      <td class="ip-cell ${h.is_dell ? 'dell-ip' : ''}">${h.ip}</td>
+      <td class="mac-cell">${h.mac}</td>
+      <td class="host-cell" title="${h.hostname}">${h.hostname || '—'}</td>
+      <td>${h.conn_type || '—'}</td>
+      <td>${h.is_dell ? '<span class="tag tag-dell">🟢 Dell / iDRAC</span>' : '<span style="color:var(--muted);font-size:.8rem">—</span>'}</td>
+      <td>
+        <button class="tag-copy" onclick="copyText('${h.ip}',this)">복사</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ── 유틸 ─────────────────────────────────────────────────────
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ 복사됨';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  });
+}
+
+function showBanner(msg) {
+  const b = document.getElementById('err-banner');
+  b.textContent = '⚠ ' + msg;
+  b.className = 'alert alert-error show';
+}
+function hideBanner() {
+  document.getElementById('err-banner').className = 'alert';
+}
+
+// ── 자동 새로고침 ─────────────────────────────────────────────
+document.getElementById('auto-toggle').addEventListener('change', function() {
+  if (this.checked) startAuto(); else stopAuto();
+});
+
+function startAuto() {
+  stopAuto();
+  autoTimer = setInterval(loadHosts, 30000);
+}
+function stopAuto() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+}
+
+// 초기 실행
+window.addEventListener('DOMContentLoaded', () => {
+  loadHosts();
+  startAuto();
+});
+</script>
+</body>
+</html>
