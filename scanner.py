@@ -1989,11 +1989,93 @@ def api_system_info():
     })
 
 
-# ─ 웹 SSH 콘솔 ───────────────────────────────────────────────────
+# ─ 웹 SSH 콘솔 (페이지 이동 시에도 세션 유지) ───────────────────
+
+_SSH_SESSIONS: dict = {}
+_SSH_LOCK = threading.Lock()
+_SSH_BUF_MAX     = 256 * 1024      # 재접속 시 되살릴 스크롤백 최대 크기
+_SSH_IDLE_MAX    = 30 * 60        # ws 분리 상태로 이 시간 지나면 세션 종료
+_SSH_DEAD_GRACE  = 90            # 원격 셸 종료 후 버퍼 보존 시간
+_SSH_MAX         = 20
+
+
+class _SSHSession:
+    def __init__(self, sid, cli, chan, meta):
+        self.sid = sid
+        self.cli = cli
+        self.chan = chan
+        self.meta = meta
+        self.buf = bytearray()
+        self.lock = threading.Lock()
+        self.ws = None
+        self.stop = threading.Event()
+        self.dead_at = 0.0
+        self.detached_at = time.time()
+
+    def _send_ws(self, obj):
+        w = self.ws
+        if w is None:
+            return
+        try:
+            w.send(json.dumps(obj))
+        except Exception:
+            self.ws = None
+            self.detached_at = time.time()
+
+    def append(self, data: bytes):
+        with self.lock:
+            self.buf.extend(data)
+            if len(self.buf) > _SSH_BUF_MAX:
+                del self.buf[:len(self.buf) - _SSH_BUF_MAX]
+            self._send_ws({"type": "data", "data": data.decode("utf-8", "replace")})
+
+    def close(self):
+        self.stop.set()
+        try:
+            self.chan.close()
+        except Exception:
+            pass
+        try:
+            self.cli.close()
+        except Exception:
+            pass
+
+
+def _ssh_pump(sess: "_SSHSession"):
+    ch = sess.chan
+    while not sess.stop.is_set():
+        try:
+            data = ch.recv(8192)
+            if not data:
+                break
+            sess.append(data)
+        except socket.timeout:
+            time.sleep(0.02)
+        except Exception:
+            break
+    sess.dead_at = time.time()
+    with sess.lock:
+        sess._send_ws({"type": "status", "data": "closed"})
+
+
+def _ssh_gc():
+    while True:
+        time.sleep(30)
+        now = time.time()
+        with _SSH_LOCK:
+            for sid, s in list(_SSH_SESSIONS.items()):
+                dead = s.dead_at and now - s.dead_at > _SSH_DEAD_GRACE
+                idle = s.ws is None and s.detached_at and now - s.detached_at > _SSH_IDLE_MAX
+                if dead or idle:
+                    s.close()
+                    _SSH_SESSIONS.pop(sid, None)
+
 
 def _register_ws_routes():
     if not sock:
         return
+
+    threading.Thread(target=_ssh_gc, daemon=True).start()
 
     @sock.route("/ws/ssh")
     def ws_ssh(ws):                     # noqa: ANN001
@@ -2008,88 +2090,120 @@ def _register_ws_routes():
             ws.send(json.dumps({"type": "error", "data": "잘못된 접속 정보"}))
             return
 
-        ip   = (cfg.get("ip") or "").strip()
-        user = cfg.get("username") or "root"
-        pw   = cfg.get("password") or ""
-        port = int(cfg.get("port") or 22)
-        cols = int(cfg.get("cols") or 120)
-        rows = int(cfg.get("rows") or 32)
-        if not ip:
-            ws.send(json.dumps({"type": "error", "data": "IP 주소가 필요합니다"}))
-            return
+        sid = cfg.get("sid") or ""
+        sess = None
+        if sid:
+            with _SSH_LOCK:
+                sess = _SSH_SESSIONS.get(sid)
+            if sess is None:
+                ws.send(json.dumps({"type": "expired",
+                                    "data": "세션이 만료되었습니다. 다시 접속하세요."}))
+                return
 
-        cli = paramiko.SSHClient()
-        cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        try:
-            cli.connect(ip, port=port, username=user, password=pw,
-                        timeout=12, banner_timeout=15, auth_timeout=15,
-                        look_for_keys=False, allow_agent=False)
-        except Exception as e:
-            ws.send(json.dumps({"type": "error", "data": f"SSH 접속 실패: {e}"}))
-            return
-
-        try:
-            chan = cli.invoke_shell(term="xterm", width=cols, height=rows)
-        except Exception as e:
-            ws.send(json.dumps({"type": "error", "data": f"셸 열기 실패: {e}"}))
-            cli.close()
-            return
-        chan.settimeout(0.0)
-        ws.send(json.dumps({"type": "status", "data": f"connected {user}@{ip}"}))
-
-        stop = threading.Event()
-
-        def pump():
-            while not stop.is_set():
-                try:
-                    data = chan.recv(8192)
-                    if not data:
-                        break
-                    ws.send(json.dumps({"type": "data",
-                                        "data": data.decode("utf-8", "replace")}))
-                except socket.timeout:
-                    time.sleep(0.02)
-                except Exception:
-                    break
-            stop.set()
+        # ── 신규 세션 ──
+        if sess is None:
+            ip   = (cfg.get("ip") or "").strip()
+            user = cfg.get("username") or "root"
+            pw   = cfg.get("password") or ""
+            port = int(cfg.get("port") or 22)
+            cols = int(cfg.get("cols") or 120)
+            rows = int(cfg.get("rows") or 32)
+            if not ip:
+                ws.send(json.dumps({"type": "error", "data": "IP 주소가 필요합니다"}))
+                return
+            with _SSH_LOCK:
+                if len(_SSH_SESSIONS) >= _SSH_MAX:
+                    ws.send(json.dumps({"type": "error",
+                                        "data": "동시 SSH 세션 한도를 초과했습니다"}))
+                    return
+            cli = paramiko.SSHClient()
+            cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             try:
-                ws.send(json.dumps({"type": "status", "data": "disconnected"}))
+                cli.connect(ip, port=port, username=user, password=pw,
+                            timeout=12, banner_timeout=15, auth_timeout=15,
+                            look_for_keys=False, allow_agent=False)
+                chan = cli.invoke_shell(term="xterm", width=cols, height=rows)
+            except Exception as e:
+                ws.send(json.dumps({"type": "error", "data": f"SSH 접속 실패: {e}"}))
+                try:
+                    cli.close()
+                except Exception:
+                    pass
+                return
+            chan.settimeout(0.0)
+            sid = uuid.uuid4().hex
+            sess = _SSHSession(sid, cli, chan, {"ip": ip, "user": user, "port": port})
+            with _SSH_LOCK:
+                _SSH_SESSIONS[sid] = sess
+            threading.Thread(target=_ssh_pump, args=(sess,), daemon=True).start()
+            ws.send(json.dumps({"type": "session", "sid": sid,
+                                "ip": ip, "user": user}))
+
+        # ── ws 연결(재)부착 ──
+        prev = sess.ws
+        if prev is not None and prev is not ws:
+            try:
+                prev.send(json.dumps({"type": "status", "data": "detached"}))
+            except Exception:
+                pass
+        with sess.lock:
+            try:
+                ws.send(json.dumps({"type": "attached",
+                                    "ip": sess.meta.get("ip", ""),
+                                    "user": sess.meta.get("user", "")}))
+                if sess.buf:
+                    ws.send(json.dumps({"type": "data",
+                                        "data": bytes(sess.buf).decode("utf-8", "replace")}))
+            except Exception:
+                return
+            sess.ws = ws
+            sess.detached_at = 0.0
+        if sess.stop.is_set() or sess.dead_at:
+            try:
+                ws.send(json.dumps({"type": "status", "data": "closed"}))
             except Exception:
                 pass
 
-        threading.Thread(target=pump, daemon=True).start()
-
+        # ── 입력 루프 ──
         try:
-            while not stop.is_set():
+            while not sess.stop.is_set():
                 msg = ws.receive(timeout=1)
                 if msg is None:
-                    if chan.exit_status_ready():
+                    if sess.chan.exit_status_ready():
                         break
                     continue
                 try:
                     m = json.loads(msg)
                 except Exception:
                     continue
-                if m.get("type") == "data":
-                    chan.send(m.get("data", ""))
-                elif m.get("type") == "resize":
+                t = m.get("type")
+                if t == "data":
                     try:
-                        chan.resize_pty(width=int(m.get("cols", 120)),
-                                        height=int(m.get("rows", 32)))
+                        sess.chan.send(m.get("data", ""))
+                    except Exception:
+                        break
+                elif t == "resize":
+                    try:
+                        sess.chan.resize_pty(width=int(m.get("cols", 120)),
+                                             height=int(m.get("rows", 32)))
                     except Exception:
                         pass
+                elif t == "close":
+                    sess.close()
+                    with _SSH_LOCK:
+                        _SSH_SESSIONS.pop(sess.sid, None)
+                    try:
+                        ws.send(json.dumps({"type": "status", "data": "closed"}))
+                    except Exception:
+                        pass
+                    break
         except Exception:
             pass
         finally:
-            stop.set()
-            try:
-                chan.close()
-            except Exception:
-                pass
-            try:
-                cli.close()
-            except Exception:
-                pass
+            # 페이지 이동 등으로 ws만 끊긴 경우 → 세션·셸은 살려둔다
+            if sess.ws is ws:
+                sess.ws = None
+                sess.detached_at = time.time()
 
 
 _register_ws_routes()

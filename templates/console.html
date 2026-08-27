@@ -215,49 +215,94 @@ screenEl.addEventListener('paste', e => {
 
 function setStatus(txt, cls) { statusEl.textContent = txt; statusEl.className = 'status ' + (cls || ''); }
 
-function connect() {
-  if (connected) return;
-  const ip = document.getElementById('ip').value.trim();
-  if (!ip) { alert('IP 주소를 입력하세요'); return; }
-  const cfg = {
-    ip,
-    port: parseInt(document.getElementById('port').value) || 22,
-    username: document.getElementById('user').value.trim() || 'root',
-    password: document.getElementById('pass').value,
-    cols: 120, rows: 34,
-  };
-  lines = ['']; cy = 0; cx = 0; render();
-  feed(`SSH 연결 중… ${cfg.username}@${ip}:${cfg.port}\r\n`);
+const SID_KEY = 'idrac_ssh_sid';
+function getSid()  { try { return localStorage.getItem(SID_KEY) || ''; } catch (e) { return ''; } }
+function setSid(v) { try { v ? localStorage.setItem(SID_KEY, v) : localStorage.removeItem(SID_KEY); } catch (e) {} }
+
+const TERM = { cols: 120, rows: 34 };
+let closing = false;
+
+function markConnected(ip, user) {
+  connected = true;
+  setStatus('● ' + (user ? user + '@' : '') + (ip || ''), 'on');
+  document.getElementById('btn-connect').style.display = 'none';
+  document.getElementById('btn-disconnect').style.display = '';
+  if (ip)   document.getElementById('ip').value = ip;
+  if (user) document.getElementById('user').value = user;
+  try { ws.send(JSON.stringify({ type: 'resize', cols: TERM.cols, rows: TERM.rows })); } catch (e) {}
+  screenEl.focus();
+}
+
+function openWs(firstMsg, banner) {
+  closing = false;
+  if (banner) { lines = ['']; cy = 0; cx = 0; render(); feed(banner); }
   setStatus('연결 중…', '');
   document.getElementById('btn-connect').disabled = true;
 
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   ws = new WebSocket(proto + location.host + '/ws/ssh');
-  ws.onopen = () => ws.send(JSON.stringify(cfg));
+  ws.onopen = () => ws.send(JSON.stringify(firstMsg));
   ws.onmessage = ev => {
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-    if (m.type === 'data') feed(m.data);
+    if (m.type === 'data') { feed(m.data); return; }
+    if (m.type === 'session') {           // 신규 세션 생성됨
+      setSid(m.sid);
+      markConnected(m.ip, m.user);
+    }
+    else if (m.type === 'attached') {     // 기존 세션에 재부착 (스크롤백 복원 직후)
+      lines = ['']; cy = 0; cx = 0; render();
+      markConnected(m.ip, m.user);
+    }
+    else if (m.type === 'expired') {
+      setSid('');
+      lines = ['']; cy = 0; cx = 0; render();
+      feed(`*** ${m.data} ***\r\n`);
+      onClosed('세션 만료');
+    }
     else if (m.type === 'status') {
-      if (m.data.startsWith('connected')) {
-        connected = true;
-        setStatus('● ' + m.data.replace('connected ', ''), 'on');
-        document.getElementById('btn-connect').style.display = 'none';
-        document.getElementById('btn-disconnect').style.display = '';
-        screenEl.focus();
-      } else if (m.data === 'disconnected') {
-        onClosed('세션 종료됨');
-      }
+      if (m.data === 'closed') { setSid(''); onClosed('세션 종료됨'); }
+      else if (m.data === 'detached') { connected = false; setStatus('다른 탭에서 사용 중', 'off'); }
+      else if (m.data === 'disconnected') { setSid(''); onClosed('세션 종료됨'); }
     }
     else if (m.type === 'error') {
       feed(`\r\n*** ${m.data} ***\r\n`);
       onClosed('접속 실패');
     }
   };
-  ws.onclose = () => onClosed('연결 끊김');
+  ws.onclose = () => {
+    if (closing) { closing = false; return; }
+    if (connected) setStatus('연결 끊김', 'off');
+    connected = false;
+    document.getElementById('btn-connect').style.display = '';
+    document.getElementById('btn-connect').disabled = false;
+    document.getElementById('btn-disconnect').style.display = 'none';
+  };
   ws.onerror = () => { feed('\r\n*** WebSocket 오류 ***\r\n'); };
 }
 
+function connect() {
+  if (connected) return;
+  const ip = document.getElementById('ip').value.trim();
+  if (!ip) { alert('IP 주소를 입력하세요'); return; }
+  setSid('');
+  const cfg = {
+    ip,
+    port: parseInt(document.getElementById('port').value) || 22,
+    username: document.getElementById('user').value.trim() || 'root',
+    password: document.getElementById('pass').value,
+    cols: TERM.cols, rows: TERM.rows,
+  };
+  openWs(cfg, `SSH 연결 중… ${cfg.username}@${ip}:${cfg.port}\r\n`);
+}
+
+function reconnect() {
+  const sid = getSid();
+  if (!sid) return;
+  openWs({ sid, cols: TERM.cols, rows: TERM.rows }, '이전 SSH 세션에 재접속 중…\r\n');
+}
+
 function onClosed(msg) {
+  closing = true;
   connected = false;
   setStatus(msg, 'off');
   document.getElementById('btn-connect').style.display = '';
@@ -268,11 +313,18 @@ function onClosed(msg) {
 }
 
 function disconnect() {
-  if (ws) { try { ws.send(JSON.stringify({ type: 'data', data: '\x04' })); } catch (e) {} }
+  if (ws) { try { ws.send(JSON.stringify({ type: 'close' })); } catch (e) {} }
+  setSid('');
   onClosed('종료됨');
 }
 
+// 페이지 이동: ws만 닫고 서버 세션은 유지 (sid 보존)
 window.addEventListener('beforeunload', () => { try { ws && ws.close(); } catch (e) {} });
+
+// 페이지 재진입 시 이전 세션 자동 복구
+{% if ws_available %}
+window.addEventListener('DOMContentLoaded', () => { if (getSid()) setTimeout(reconnect, 150); });
+{% endif %}
 </script>
 </body>
 </html>
