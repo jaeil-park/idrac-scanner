@@ -28,6 +28,9 @@
 | 🔍 **자동 스캔** | Ping 스윕 → ARP/OUI 필터 → 포트 확인 → Redfish 핑거프린팅 |
 | 🏷️ **서비스 태그 수집** | Dell iDRAC Redfish API로 시리얼 번호·모델명 자동 조회 |
 | ⚙️ **일괄 설정** | NTP·DNS·SNMP·BIOS 등 프리셋을 여러 장비에 동시 적용 |
+| 🔧 **하드웨어 정보 팝업** | 스캐너에서 서비스 태그 클릭 → CPU·메모리·디스크·NIC·PSU·펌웨어 상세 (Redfish, DB 캐시) |
+| 🔄 **펌웨어 업데이트** | 일괄 설정 페이지에서 Dell DUP 파일 업로드 또는 공유 URI로 여러 iDRAC에 순차 설치 (Redfish) |
+| 🖥️ **웹 SSH 콘솔** | 브라우저에서 iDRAC/서버로 직접 SSH — `/console` (flask-sock + paramiko) |
 | 📋 **장비 관리** | 등록·미등록 구분, 카테고리 태그, 메모, 자격증명 저장 |
 | 🌐 **스캔 범위 설정** | CIDR 단위 범위 추가·삭제, 기본값 192.168.0.0/23 |
 | 🔢 **서브넷 계산기** | CIDR 입력 시 네트워크/브로드캐스트/호스트 수 즉시 계산 |
@@ -76,6 +79,8 @@ http://<서버IP>:5010
 | `PORT` | `5010` | 웹 서버 포트 |
 | `DB_PATH` | `/data/known_devices.db` | 장비 DB 저장 경로 |
 | `IDRAC_FALLBACK_CREDS` | `[["root","calvin"]]` | iDRAC 폴백 자격증명 JSON 배열 |
+| `FW_LIB_DIR` | (없음) | 컨테이너 내 펌웨어 라이브러리 경로. 지정 시 일괄 설정 → 펌웨어 → **NAS 라이브러리** 탭에서 해당 디렉토리를 재귀 탐색해 파일 선택 |
+| `FW_LIB_HOST` | `/mnt/nas-firmware` | 호스트에 마운트된 NAS 펌웨어 디렉토리 (compose bind mount 원본) |
 
 ```env
 # 예시: 여러 자격증명 등록

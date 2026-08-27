@@ -35,6 +35,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, stream_with_context, url_for)
 
+try:                                   # 웹 SSH 콘솔용 (없어도 앱은 동작)
+    from flask_sock import Sock
+    _WS_AVAILABLE = True
+except Exception:                      # pragma: no cover
+    Sock = None
+    _WS_AVAILABLE = False
+
 IS_WINDOWS = sys.platform == "win32"
 
 DB_PATH = os.environ.get("DB_PATH", "/data/known_devices.db")
@@ -289,6 +296,12 @@ def init_db():
                 component   TEXT NOT NULL DEFAULT 'ALL',
                 created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
+
+            CREATE TABLE IF NOT EXISTS hw_info (
+                ip         TEXT PRIMARY KEY,
+                data       TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
         """)
     # 기존 DB 컬럼 마이그레이션
     with sqlite3.connect(DB_PATH) as c:
@@ -322,6 +335,9 @@ app.secret_key = _SECRET_KEY.encode() if _SECRET_KEY else os.urandom(24)
 AUTH_USER     = os.environ.get("AUTH_USER", "admin")
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "")   # 비어 있으면 인증 비활성화
 
+# 웹 SSH 콘솔 (flask-sock)
+sock = Sock(app) if _WS_AVAILABLE else None
+
 
 def _auth_enabled() -> bool:
     return bool(AUTH_PASSWORD)
@@ -346,6 +362,8 @@ def _global_auth_check():
         return None
     if request.path.startswith("/api/"):
         return jsonify({"error": "Unauthorized", "login": "/login"}), 401
+    if request.path.startswith("/ws/"):
+        return Response("Unauthorized", status=401)
     return redirect(url_for("login", next=request.full_path))
 
 
@@ -565,6 +583,357 @@ def _fetch_system_info(ip: str) -> dict:
         except Exception:
             pass
     return result
+
+
+# ── 하드웨어 상세 정보 (Redfish) ──────────────────────────────────
+
+def _auth_candidates(ip: str) -> list:
+    """해당 IP에 시도할 (user, pass) 목록 — 저장값 → 폴백 → 무인증."""
+    cred = _get_cred(ip)
+    cands: list = [(cred["username"], cred["password"])]
+    for dc in _load_fallback_creds():
+        t = tuple(dc)
+        if t not in cands:
+            cands.append(t)
+    cands.append(None)
+    return cands
+
+
+def _resolve_auth(ip: str):
+    """인증이 실제로 통하는 자격증명을 하나 찾아 반환 (없으면 None)."""
+    test_paths = ["/redfish/v1/Managers/iDRAC.Embedded.1",
+                  "/redfish/v1/Systems/System.Embedded.1"]
+    for auth in _auth_candidates(ip):
+        for tp in test_paths:
+            try:
+                r = _req.get(f"https://{ip}{tp}", auth=auth, verify=False, timeout=6)
+                if r.status_code == 200:
+                    return auth
+                if r.status_code in (401, 403):
+                    break
+            except Exception:
+                pass
+    return None
+
+
+def _fetch_hw_detail(ip: str, want_fw: bool = False) -> dict:
+    """Redfish로 CPU/메모리/디스크/NIC/PSU/펌웨어 정보를 수집."""
+    out: dict = {
+        "ip": ip, "ok": False, "error": "",
+        "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "system": {}, "processors": [], "memory": [], "storage": [],
+        "network": [], "power": {}, "idrac": {}, "firmware": [],
+    }
+    auth = _resolve_auth(ip)
+    if auth is None:
+        out["error"] = "인증 실패 — 일괄 설정 페이지에서 IP별 자격증명을 저장하세요."
+        return out
+
+    def g(path: str):
+        if not path:
+            return None
+        try:
+            r = _req.get(f"https://{ip}{path}", auth=auth, verify=False, timeout=12)
+            return r.json() if r.status_code == 200 else None
+        except Exception:
+            return None
+
+    def health(obj):
+        s = (obj or {}).get("Status", {}) or {}
+        return s.get("Health", "") or s.get("HealthRollup", "") or ""
+
+    # ── System ──
+    sysobj = g("/redfish/v1/Systems/System.Embedded.1") or g("/redfish/v1/Systems/1")
+    if not sysobj:
+        for m in (g("/redfish/v1/Systems") or {}).get("Members", []):
+            sysobj = g(m.get("@odata.id", ""))
+            if sysobj:
+                break
+    sys_path = (sysobj or {}).get("@odata.id", "/redfish/v1/Systems/System.Embedded.1")
+    if sysobj:
+        ps = sysobj.get("ProcessorSummary", {}) or {}
+        ms = sysobj.get("MemorySummary", {}) or {}
+        out["system"] = {
+            "model":        sysobj.get("Model", ""),
+            "manufacturer": sysobj.get("Manufacturer", ""),
+            "service_tag":  sysobj.get("SKU", "") or sysobj.get("SerialNumber", ""),
+            "hostname":     sysobj.get("HostName", ""),
+            "bios_version": sysobj.get("BiosVersion", ""),
+            "power_state":  sysobj.get("PowerState", ""),
+            "health":       health(sysobj),
+            "indicator_led": sysobj.get("IndicatorLED", ""),
+            "cpu_count":    ps.get("Count", ""),
+            "cpu_model":    (ps.get("Model", "") or "").strip(),
+            "mem_total_gib": ms.get("TotalSystemMemoryGiB", ""),
+        }
+
+    # ── Processors ──
+    for m in (g(sys_path + "/Processors") or {}).get("Members", [])[:16]:
+        p = g(m.get("@odata.id", ""))
+        if not p:
+            continue
+        if p.get("ProcessorType", "CPU") not in ("CPU", "", None):
+            continue
+        out["processors"].append({
+            "id":        p.get("Id", ""),
+            "model":     (p.get("Model", "") or "").strip(),
+            "cores":     p.get("TotalCores", ""),
+            "threads":   p.get("TotalThreads", ""),
+            "speed_mhz": p.get("MaxSpeedMHz", ""),
+            "health":    health(p),
+            "state":     (p.get("Status", {}) or {}).get("State", ""),
+        })
+
+    # ── Memory ──
+    for m in (g(sys_path + "/Memory") or {}).get("Members", [])[:64]:
+        d = g(m.get("@odata.id", ""))
+        if not d:
+            continue
+        st = d.get("Status", {}) or {}
+        cap = d.get("CapacityMiB")
+        if not cap and st.get("State") == "Absent":
+            continue
+        speed = d.get("OperatingSpeedMhz", "")
+        if not speed:
+            allowed = d.get("AllowedSpeedsMHz") or []
+            speed = allowed[0] if allowed else ""
+        out["memory"].append({
+            "locator":      d.get("DeviceLocator", "") or d.get("Id", ""),
+            "capacity_gib": round(cap / 1024, 1) if cap else "",
+            "speed_mhz":    speed,
+            "type":         d.get("MemoryDeviceType", ""),
+            "manufacturer": (d.get("Manufacturer", "") or "").strip(),
+            "part_number":  (d.get("PartNumber", "") or "").strip(),
+            "serial":       (d.get("SerialNumber", "") or "").strip(),
+            "health":       st.get("Health", ""),
+            "state":        st.get("State", ""),
+        })
+
+    # ── Storage ──
+    for m in (g(sys_path + "/Storage") or {}).get("Members", [])[:16]:
+        ctrl = g(m.get("@odata.id", ""))
+        if not ctrl:
+            continue
+        scs = ctrl.get("StorageControllers", []) or [{}]
+        cinfo = {
+            "name":     ctrl.get("Name", ""),
+            "model":    scs[0].get("Model", "") or ctrl.get("Name", ""),
+            "firmware": scs[0].get("FirmwareVersion", ""),
+            "health":   health(ctrl),
+            "drives":   [],
+        }
+        for dref in ctrl.get("Drives", [])[:64]:
+            dr = g(dref.get("@odata.id", ""))
+            if not dr:
+                continue
+            cap = dr.get("CapacityBytes") or 0
+            cinfo["drives"].append({
+                "name":        dr.get("Name", ""),
+                "capacity_gb": round(cap / 1e9, 1) if cap else "",
+                "media":       dr.get("MediaType", ""),
+                "proto":       dr.get("Protocol", ""),
+                "model":       (dr.get("Model", "") or "").strip(),
+                "serial":      (dr.get("SerialNumber", "") or "").strip(),
+                "health":      health(dr),
+                "state":       (dr.get("Status", {}) or {}).get("State", ""),
+            })
+        out["storage"].append(cinfo)
+
+    # ── Network (EthernetInterfaces) ──
+    for m in (g(sys_path + "/EthernetInterfaces") or {}).get("Members", [])[:32]:
+        n = g(m.get("@odata.id", ""))
+        if not n:
+            continue
+        out["network"].append({
+            "id":         n.get("Id", ""),
+            "name":       n.get("Name", ""),
+            "mac":        n.get("MACAddress", "") or n.get("PermanentMACAddress", ""),
+            "speed_mbps": n.get("SpeedMbps", ""),
+            "link":       n.get("LinkStatus", ""),
+            "health":     health(n),
+        })
+
+    # ── Power / PSU ──
+    pw = (g("/redfish/v1/Chassis/System.Embedded.1/Power")
+          or g("/redfish/v1/Chassis/1/Power") or {})
+    psus = []
+    for p in pw.get("PowerSupplies", []):
+        psus.append({
+            "name":       p.get("Name", ""),
+            "model":      p.get("Model", ""),
+            "serial":     p.get("SerialNumber", ""),
+            "firmware":   p.get("FirmwareVersion", ""),
+            "capacity_w": p.get("PowerCapacityWatts", ""),
+            "input_w":    p.get("PowerInputWatts", ""),
+            "health":     health(p),
+            "state":      (p.get("Status", {}) or {}).get("State", ""),
+        })
+    pcs = pw.get("PowerControl") or [{}]
+    out["power"] = {
+        "supplies":   psus,
+        "consumed_w": pcs[0].get("PowerConsumedWatts", "") if pcs else "",
+        "capacity_w": pcs[0].get("PowerCapacityWatts", "") if pcs else "",
+    }
+
+    # ── iDRAC Manager ──
+    mgr = (g("/redfish/v1/Managers/iDRAC.Embedded.1")
+           or g("/redfish/v1/Managers/1") or {})
+    out["idrac"] = {
+        "firmware_version": mgr.get("FirmwareVersion", ""),
+        "model":            mgr.get("Model", ""),
+        "datetime":         mgr.get("DateTime", ""),
+        "health":           health(mgr),
+    }
+
+    # ── Firmware Inventory (선택 — 느림) ──
+    if want_fw:
+        seen = set()
+        for m in (g("/redfish/v1/UpdateService/FirmwareInventory") or {}).get("Members", [])[:250]:
+            fid = m.get("@odata.id", "")
+            if "Installed" not in fid:
+                continue
+            f = g(fid)
+            if not f or not f.get("Version"):
+                continue
+            key = (f.get("Name", ""), f.get("Version", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            out["firmware"].append({
+                "name":       f.get("Name", ""),
+                "version":    f.get("Version", ""),
+                "updateable": f.get("Updateable", ""),
+            })
+        out["firmware"] = sorted(out["firmware"], key=lambda x: x["name"])[:120]
+
+    out["ok"] = True
+    return out
+
+
+# ── iDRAC 펌웨어 업데이트 (Redfish) ──────────────────────────────
+
+_FW_TMP_DIR = os.environ.get("FW_TMP_DIR", "/tmp/idrac_fw")
+# NAS 등 서버에서 접근 가능한 펌웨어 보관 디렉토리 (컨테이너에 마운트)
+_FW_LIB_DIR = os.environ.get("FW_LIB_DIR", "")
+_FW_EXTS = (".exe", ".d9", ".d7", ".bin", ".pm", ".usc", ".ph", ".rpm")
+
+
+def _fw_lib_root() -> str:
+    return os.path.realpath(_FW_LIB_DIR) if _FW_LIB_DIR else ""
+
+
+def _resolve_fw_lib_path(rel: str) -> str:
+    """라이브러리 디렉토리 내부의 파일만 허용 (경로 탈출 차단)."""
+    root = _fw_lib_root()
+    if not root or not rel:
+        return ""
+    target = os.path.realpath(os.path.join(root, rel.lstrip("/\\")))
+    if target != root and not target.startswith(root + os.sep):
+        return ""
+    return target if os.path.isfile(target) else ""
+
+
+def _run_fw_update(q: queue.Queue, payload: dict, file_path: str,
+                   file_name: str, cleanup: bool = True):
+    """백그라운드 — 대상별로 Redfish 펌웨어 업로드/설치 후 Task 폴링."""
+    targets     = payload.get("targets", [])
+    use_common  = payload.get("use_common_cred", False)
+    common_cred = payload.get("common_cred", {})
+    apply_time  = payload.get("apply_time", "Immediate")     # Immediate | OnReset
+    image_uri   = (payload.get("image_uri") or "").strip()
+    xfer_proto  = payload.get("transfer_protocol", "HTTP")
+    share_user  = payload.get("share_user", "")
+    share_pass  = payload.get("share_pass", "")
+
+    for ip in targets:
+        cred = common_cred if use_common else _get_cred(ip)
+        auth = (cred["username"], cred["password"])
+        q.put(sse("target_start", ip=ip))
+        ok_final = False
+        try:
+            us = {}
+            try:
+                r = _req.get(f"https://{ip}/redfish/v1/UpdateService",
+                             auth=auth, verify=False, timeout=15)
+                if r.status_code == 200:
+                    us = r.json()
+            except Exception:
+                pass
+
+            if image_uri:
+                act = (us.get("Actions", {}) or {}).get("#UpdateService.SimpleUpdate", {}) or {}
+                target = act.get("target",
+                    "/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate")
+                body = {"ImageURI": image_uri, "TransferProtocol": xfer_proto,
+                        "@Redfish.OperationApplyTime": apply_time}
+                if share_user:
+                    body["Username"] = share_user
+                if share_pass:
+                    body["Password"] = share_pass
+                resp = _req.post(f"https://{ip}{target}", auth=auth, json=body,
+                                 verify=False, timeout=90)
+                step = {"engine": "fw", "cmd": f"SimpleUpdate ← {image_uri}",
+                        "ok": resp.status_code in (200, 202),
+                        "output": f"HTTP {resp.status_code} {resp.text[:200]}"}
+            else:
+                push_uri = us.get("MultipartHTTPPushUri") or "/redfish/v1/UpdateService/MultipartUpload"
+                params = {"Targets": [], "@Redfish.OperationApplyTime": apply_time}
+                with open(file_path, "rb") as fh:
+                    files = {
+                        "UpdateParameters": ("params.json", json.dumps(params), "application/json"),
+                        "UpdateFile": (file_name, fh, "application/octet-stream"),
+                    }
+                    resp = _req.post(f"https://{ip}{push_uri}", auth=auth, files=files,
+                                     verify=False, timeout=900)
+                step = {"engine": "fw", "cmd": f"업로드 {file_name} (apply={apply_time})",
+                        "ok": resp.status_code in (200, 202),
+                        "output": f"HTTP {resp.status_code} {resp.text[:200]}"}
+
+            q.put(sse("step_done", ip=ip, step=step))
+            ok_final = step["ok"]
+
+            loc = resp.headers.get("Location", "")
+            job_id = loc.rstrip("/").split("/")[-1] if loc else ""
+            if job_id and step["ok"]:
+                for _ in range(180):            # 최대 ~30분
+                    time.sleep(10)
+                    try:
+                        jr = _req.get(f"https://{ip}/redfish/v1/TaskService/Tasks/{job_id}",
+                                      auth=auth, verify=False, timeout=20)
+                        if jr.status_code == 404:
+                            jr = _req.get(f"https://{ip}/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs/{job_id}",
+                                          auth=auth, verify=False, timeout=20)
+                        if jr.status_code != 200:
+                            continue
+                        t = jr.json()
+                        state = t.get("TaskState") or t.get("JobState") or "Running"
+                        pct = t.get("PercentComplete", 0)
+                        if state in ("Completed", "Exception", "Killed", "Cancelled", "Failed"):
+                            ok_final = state == "Completed"
+                            msgs = " | ".join(m.get("Message", "")
+                                              for m in t.get("Messages", []))
+                            q.put(sse("step_done", ip=ip, step={
+                                "engine": "fw", "cmd": f"작업 {job_id}",
+                                "ok": ok_final, "output": f"{state} — {msgs}"}))
+                            break
+                        q.put(sse("step_done", ip=ip, step={
+                            "engine": "fw", "cmd": f"진행 중 ({pct}%)",
+                            "ok": True, "output": state}))
+                    except Exception:
+                        continue
+        except Exception as e:
+            q.put(sse("step_done", ip=ip, step={
+                "engine": "fw", "cmd": "오류", "ok": False, "output": str(e)}))
+        q.put(sse("target_done", ip=ip, ok=ok_final))
+
+    q.put(sse("done", ts=datetime.now().strftime("%H:%M:%S")))
+    q.put(None)
+    if cleanup:
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
 
 
 def fingerprint_idrac(ip: str) -> tuple[bool, str, str, str]:
@@ -963,6 +1332,11 @@ def index():
 @app.route("/config")
 def config_page():
     return render_template("config.html")
+
+
+@app.route("/console")
+def console_page():
+    return render_template("console.html", ws_available=_WS_AVAILABLE)
 
 
 # ─ 스캔 ──────────────────────────────────────────────────────────
@@ -1457,6 +1831,151 @@ def api_scp_apply_stream(job_id):
                     headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
 
+# ─ 하드웨어 상세 정보 ────────────────────────────────────────────
+
+@app.route("/api/hw_info/<path:ip>", methods=["GET"])
+def api_hw_info(ip):
+    refresh = request.args.get("refresh") == "1"
+    want_fw = request.args.get("fw") == "1"
+
+    if not refresh:
+        try:
+            with sqlite3.connect(DB_PATH) as c:
+                row = c.execute(
+                    "SELECT data, updated_at FROM hw_info WHERE ip=?", (ip,)
+                ).fetchone()
+            if row:
+                data = json.loads(row[0])
+                data["cached"] = True
+                data["cached_at"] = row[1]
+                # 펌웨어 목록을 원하는데 캐시에 없으면 새로 조회
+                if not (want_fw and not data.get("firmware")):
+                    return jsonify(data)
+        except Exception:
+            pass
+
+    data = _fetch_hw_detail(ip, want_fw=want_fw)
+    if data.get("ok"):
+        try:
+            with sqlite3.connect(DB_PATH) as c:
+                c.execute(
+                    "INSERT INTO hw_info (ip, data, updated_at) "
+                    "VALUES (?, ?, datetime('now','localtime')) "
+                    "ON CONFLICT(ip) DO UPDATE SET data=excluded.data, "
+                    "updated_at=excluded.updated_at",
+                    (ip, json.dumps(data)),
+                )
+        except Exception:
+            pass
+    return jsonify(data)
+
+
+# ─ 펌웨어 업데이트 ───────────────────────────────────────────────
+
+@app.route("/api/fw_update", methods=["POST"])
+def api_fw_update_start():
+    try:
+        targets = json.loads(request.form.get("targets", "[]"))
+    except Exception:
+        targets = []
+    if not targets:
+        return jsonify({"error": "대상 iDRAC를 선택하세요"}), 400
+
+    payload = {
+        "targets": targets,
+        "apply_time": request.form.get("apply_time", "Immediate"),
+        "image_uri": request.form.get("image_uri", "").strip(),
+        "transfer_protocol": request.form.get("transfer_protocol", "HTTP"),
+        "share_user": request.form.get("share_user", ""),
+        "share_pass": request.form.get("share_pass", ""),
+        "use_common_cred": request.form.get("use_common_cred") == "1",
+        "common_cred": {
+            "username": request.form.get("cc_user", "root"),
+            "password": request.form.get("cc_pass", ""),
+        },
+    }
+
+    file_path, file_name, cleanup = "", "", True
+    f = request.files.get("file")
+    lib_path = request.form.get("lib_path", "").strip()
+    if f and f.filename:
+        os.makedirs(_FW_TMP_DIR, exist_ok=True)
+        file_name = os.path.basename(f.filename)
+        file_path = os.path.join(_FW_TMP_DIR, f"{uuid.uuid4().hex}_{file_name}")
+        f.save(file_path)
+    elif lib_path:
+        resolved = _resolve_fw_lib_path(lib_path)
+        if not resolved:
+            return jsonify({"error": f"라이브러리에서 파일을 찾을 수 없습니다: {lib_path}"}), 400
+        file_path = resolved
+        file_name = os.path.basename(resolved)
+        cleanup = False                      # 공유 원본 파일은 삭제하지 않음
+    elif not payload["image_uri"]:
+        return jsonify({"error": "펌웨어 파일 · 라이브러리 파일 · 이미지 URI 중 하나가 필요합니다"}), 400
+
+    job_id = uuid.uuid4().hex[:10]
+    q: queue.Queue = queue.Queue()
+    _active_jobs[job_id] = q
+    threading.Thread(target=_run_fw_update,
+                     args=(q, payload, file_path, file_name, cleanup), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/fw_files", methods=["GET"])
+def api_fw_files():
+    root = _fw_lib_root()
+    if not root or not os.path.isdir(root):
+        return jsonify({"configured": False, "dir": _FW_LIB_DIR, "files": []})
+
+    q = (request.args.get("q") or "").lower()
+    files = []
+    for cur, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for nm in names:
+            if not nm.lower().endswith(_FW_EXTS):
+                continue
+            full = os.path.join(cur, nm)
+            rel = os.path.relpath(full, root).replace("\\", "/")
+            if q and q not in rel.lower():
+                continue
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            files.append({
+                "name": nm,
+                "path": rel,
+                "size_mb": round(st.st_size / 1e6, 1),
+                "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            })
+        if len(files) >= 3000:
+            break
+    files.sort(key=lambda x: x["mtime"], reverse=True)
+    return jsonify({"configured": True, "dir": _FW_LIB_DIR,
+                    "count": len(files), "files": files[:1000]})
+
+
+@app.route("/api/fw_update/<job_id>/stream")
+def api_fw_update_stream(job_id):
+    q = _active_jobs.get(job_id)
+    if not q:
+        return jsonify({"error": "job not found"}), 404
+
+    def generate():
+        while True:
+            msg = q.get()
+            if msg is None:
+                break
+            yield msg
+        _active_jobs.pop(job_id, None)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ─ 시스템 정보 ───────────────────────────────────────────────────
 
 @app.route("/api/system_info", methods=["GET"])
@@ -1464,7 +1983,116 @@ def api_system_info():
     return jsonify({
         "racadm_available": racadm_available(),
         "racadm_path": shutil.which("racadm") or "",
+        "ws_available": _WS_AVAILABLE,
+        "fw_lib_dir": _FW_LIB_DIR,
+        "fw_lib_ready": bool(_fw_lib_root() and os.path.isdir(_fw_lib_root())),
     })
+
+
+# ─ 웹 SSH 콘솔 ───────────────────────────────────────────────────
+
+def _register_ws_routes():
+    if not sock:
+        return
+
+    @sock.route("/ws/ssh")
+    def ws_ssh(ws):                     # noqa: ANN001
+        import paramiko
+
+        raw = ws.receive(timeout=30)
+        if not raw:
+            return
+        try:
+            cfg = json.loads(raw)
+        except Exception:
+            ws.send(json.dumps({"type": "error", "data": "잘못된 접속 정보"}))
+            return
+
+        ip   = (cfg.get("ip") or "").strip()
+        user = cfg.get("username") or "root"
+        pw   = cfg.get("password") or ""
+        port = int(cfg.get("port") or 22)
+        cols = int(cfg.get("cols") or 120)
+        rows = int(cfg.get("rows") or 32)
+        if not ip:
+            ws.send(json.dumps({"type": "error", "data": "IP 주소가 필요합니다"}))
+            return
+
+        cli = paramiko.SSHClient()
+        cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            cli.connect(ip, port=port, username=user, password=pw,
+                        timeout=12, banner_timeout=15, auth_timeout=15,
+                        look_for_keys=False, allow_agent=False)
+        except Exception as e:
+            ws.send(json.dumps({"type": "error", "data": f"SSH 접속 실패: {e}"}))
+            return
+
+        try:
+            chan = cli.invoke_shell(term="xterm", width=cols, height=rows)
+        except Exception as e:
+            ws.send(json.dumps({"type": "error", "data": f"셸 열기 실패: {e}"}))
+            cli.close()
+            return
+        chan.settimeout(0.0)
+        ws.send(json.dumps({"type": "status", "data": f"connected {user}@{ip}"}))
+
+        stop = threading.Event()
+
+        def pump():
+            while not stop.is_set():
+                try:
+                    data = chan.recv(8192)
+                    if not data:
+                        break
+                    ws.send(json.dumps({"type": "data",
+                                        "data": data.decode("utf-8", "replace")}))
+                except socket.timeout:
+                    time.sleep(0.02)
+                except Exception:
+                    break
+            stop.set()
+            try:
+                ws.send(json.dumps({"type": "status", "data": "disconnected"}))
+            except Exception:
+                pass
+
+        threading.Thread(target=pump, daemon=True).start()
+
+        try:
+            while not stop.is_set():
+                msg = ws.receive(timeout=1)
+                if msg is None:
+                    if chan.exit_status_ready():
+                        break
+                    continue
+                try:
+                    m = json.loads(msg)
+                except Exception:
+                    continue
+                if m.get("type") == "data":
+                    chan.send(m.get("data", ""))
+                elif m.get("type") == "resize":
+                    try:
+                        chan.resize_pty(width=int(m.get("cols", 120)),
+                                        height=int(m.get("rows", 32)))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        finally:
+            stop.set()
+            try:
+                chan.close()
+            except Exception:
+                pass
+            try:
+                cli.close()
+            except Exception:
+                pass
+
+
+_register_ws_routes()
 
 
 # ─────────────────────────────────────────────────────────────────

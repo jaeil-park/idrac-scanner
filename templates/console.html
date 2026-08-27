@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iDRAC SSH 콘솔</title>
+<style>
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+  :root {
+    --bg:#0d1117; --s:#161b22; --s2:#1c2128; --bdr:#30363d;
+    --txt:#e6edf3; --muted:#7d8590; --accent:#388bfd; --green:#3fb950;
+    --green-bdr:#238636; --red:#f85149; --yellow:#d29922;
+  }
+  body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--txt); min-height:100vh; }
+
+  .nav { background:var(--s); border-bottom:1px solid var(--bdr); padding:0 20px; display:flex; align-items:center; height:54px; }
+  .nav-brand { display:flex; align-items:center; gap:10px; margin-right:24px; font-weight:700; color:var(--txt); text-decoration:none; font-size:1rem; }
+  .nav-brand .ico { background:linear-gradient(135deg,#1a7f37,#238636); border-radius:8px; width:30px; height:30px; display:flex; align-items:center; justify-content:center; font-size:16px; }
+  .nav-tab { padding:12px 16px; color:var(--muted); text-decoration:none; font-size:.85rem; border-bottom:2px solid transparent; }
+  .nav-tab:hover { color:var(--txt); }
+  .nav-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+  .wrap { padding:20px 16px; max-width:1200px; margin:0 auto; }
+  .hdr { display:flex; align-items:center; gap:14px; margin-bottom:18px; }
+  .hdr-ico { width:44px; height:44px; background:linear-gradient(135deg,#1a7f37,#238636); border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:22px; }
+  .hdr h1 { font-size:1.35rem; }
+  .hdr p { font-size:.8rem; color:var(--muted); margin-top:3px; }
+
+  .bar { background:var(--s); border:1px solid var(--bdr); border-radius:10px; padding:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:12px; }
+  .field { display:flex; flex-direction:column; gap:4px; }
+  .field label { font-size:.72rem; color:var(--muted); }
+  .field input, .field select {
+    background:var(--bg); border:1px solid var(--bdr); border-radius:7px;
+    padding:7px 10px; color:var(--txt); font-size:.85rem; outline:none; font-family:monospace;
+  }
+  .field input:focus, .field select:focus { border-color:var(--accent); }
+  .field input.ip { width:170px; } .field input.u { width:120px; } .field input.p { width:150px; } .field input.port { width:70px; }
+  .btn { padding:8px 18px; border-radius:7px; border:none; font-size:.85rem; font-weight:600; cursor:pointer; }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .btn-go { background:var(--green); color:#fff; }
+  .btn-stop { background:transparent; border:1px solid var(--red); color:var(--red); }
+
+  .status { font-size:.78rem; color:var(--muted); margin-left:auto; align-self:center; }
+  .status.on { color:var(--green); }
+  .status.off { color:var(--red); }
+
+  #screen {
+    background:#000; color:#d0d7de; border:1px solid var(--bdr); border-radius:10px;
+    padding:12px 14px; font-family:'Cascadia Code','Courier New',monospace; font-size:.82rem;
+    line-height:1.4; white-space:pre-wrap; word-break:break-all;
+    height:calc(100vh - 260px); min-height:320px; overflow-y:auto; outline:none;
+  }
+  #screen:focus { border-color:var(--accent); }
+  .hint { font-size:.72rem; color:var(--muted); margin-top:8px; line-height:1.6; }
+  .hint code { background:var(--s2); padding:1px 5px; border-radius:4px; color:var(--txt); }
+  .warn-box { background:rgba(210,153,34,.08); border:1px solid rgba(210,153,34,.35); color:var(--yellow); border-radius:8px; padding:10px 12px; font-size:.78rem; margin-bottom:12px; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="nav-brand" href="/"><div class="ico">🖧</div> iDRAC Manager</a>
+  <a class="nav-tab" href="/">스캐너</a>
+  <a class="nav-tab" href="/config">일괄 설정</a>
+  <a class="nav-tab active" href="/console">SSH 콘솔</a>
+</nav>
+
+<div class="wrap">
+  <div class="hdr">
+    <div class="hdr-ico">🖥️</div>
+    <div>
+      <h1>iDRAC SSH 콘솔</h1>
+      <p>브라우저에서 직접 iDRAC(또는 서버 OS)로 SSH 접속 — 서버가 대상 장비로 세션을 중계합니다</p>
+    </div>
+  </div>
+
+  {% if not ws_available %}
+  <div class="warn-box">⚠ <b>flask-sock 미설치</b> — 웹 SSH 기능이 비활성화되어 있습니다.
+    <code>pip install flask-sock paramiko</code> 후 서버(또는 컨테이너)를 재시작하세요.</div>
+  {% endif %}
+
+  <div class="bar">
+    <div class="field">
+      <label>등록 장비</label>
+      <select id="dev-select" onchange="pickDevice()">
+        <option value="">— 직접 입력 —</option>
+      </select>
+    </div>
+    <div class="field"><label>IP 주소</label><input class="ip" id="ip" placeholder="192.168.1.28"></div>
+    <div class="field"><label>포트</label><input class="port" id="port" value="22"></div>
+    <div class="field"><label>사용자</label><input class="u" id="user" value="root"></div>
+    <div class="field"><label>비밀번호</label><input class="p" id="pass" type="password"></div>
+    <button class="btn btn-go" id="btn-connect" onclick="connect()" {% if not ws_available %}disabled{% endif %}>▶ 접속</button>
+    <button class="btn btn-stop" id="btn-disconnect" onclick="disconnect()" style="display:none">■ 종료</button>
+    <span class="status off" id="status">연결 안 됨</span>
+  </div>
+
+  <div id="screen" tabindex="0"></div>
+
+  <div class="hint">
+    화면을 클릭하면 키 입력이 전달됩니다. &nbsp;
+    <code>Ctrl+C</code> 중단 · <code>Ctrl+D</code> 로그아웃 · <code>Ctrl+L</code> 화면지움 · 방향키/Tab 지원<br>
+    iDRAC 접속 후 <code>racadm getsysinfo</code>, <code>racadm getsel</code>, <code>racadm help</code> 등을 사용할 수 있습니다.
+  </div>
+</div>
+
+<script>
+let ws = null, connected = false;
+let lines = [''], cy = 0, cx = 0;
+const screenEl = document.getElementById('screen');
+const statusEl = document.getElementById('status');
+
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── 초기화: 등록 장비 + 저장된 자격증명 ──
+let credMap = {};
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const [kn, cr] = await Promise.all([
+      fetch('/api/known').then(r=>r.json()).catch(()=>[]),
+      fetch('/api/credentials').then(r=>r.json()).catch(()=>[]),
+    ]);
+    (cr||[]).forEach(c => credMap[c.ip] = c);
+    const sel = document.getElementById('dev-select');
+    (kn||[]).sort((a,b)=>a.ip.localeCompare(b.ip,undefined,{numeric:true})).forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.ip;
+      o.textContent = d.ip + (d.label ? ` · ${d.label}` : '') + (d.service_tag ? ` · ${d.service_tag}` : '');
+      sel.appendChild(o);
+    });
+  } catch(e) {}
+});
+
+function pickDevice() {
+  const ip = document.getElementById('dev-select').value;
+  if (!ip) return;
+  document.getElementById('ip').value = ip;
+  const c = credMap[ip];
+  if (c) document.getElementById('user').value = c.username || 'root';
+  document.getElementById('pass').focus();
+}
+
+// ── 터미널 렌더 (경량 ANSI 처리) ──
+function render() {
+  screenEl.textContent = lines.join('\n');
+  screenEl.scrollTop = screenEl.scrollHeight;
+}
+function putChar(ch) {
+  const cur = lines[cy] || '';
+  if (cx >= cur.length) lines[cy] = cur.padEnd(cx, ' ') + ch;
+  else lines[cy] = cur.slice(0, cx) + ch + cur.slice(cx + 1);
+  cx++;
+}
+function feed(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\x1b') {
+      if (s[i + 1] === '[') {
+        let j = i + 2, params = '';
+        while (j < s.length && !/[A-Za-z@]/.test(s[j])) { params += s[j]; j++; }
+        const cmd = s[j], n = parseInt(params, 10) || 0;
+        if (cmd === 'K') {
+          if (params === '' || params === '0') lines[cy] = (lines[cy]||'').slice(0, cx);
+          else if (params === '1') lines[cy] = ' '.repeat(cx) + (lines[cy]||'').slice(cx);
+          else lines[cy] = '';
+        } else if (cmd === 'D') cx = Math.max(0, cx - (n || 1));
+        else if (cmd === 'C') cx += (n || 1);
+        else if (cmd === 'G') cx = Math.max(0, (n || 1) - 1);
+        else if (cmd === 'J' && params === '2') { lines = ['']; cy = 0; cx = 0; }
+        i = j;
+        continue;
+      }
+      continue;
+    }
+    if (c === '\r') cx = 0;
+    else if (c === '\n') { cy++; if (cy >= lines.length) lines.push(''); if (lines[cy] == null) lines[cy] = ''; cx = 0; }
+    else if (c === '\x08') cx = Math.max(0, cx - 1);
+    else if (c === '\x07') { /* bell */ }
+    else if (c === '\t') { putChar(' '); while (cx % 8 !== 0) putChar(' '); }
+    else if (c >= ' ') putChar(c);
+  }
+  if (lines.length > 6000) { lines = lines.slice(-4500); cy = Math.min(cy, lines.length - 1); }
+  render();
+}
+
+// ── 키 입력 → 서버 ──
+screenEl.addEventListener('keydown', e => {
+  if (!connected) return;
+  const k = e.key;
+  let out = null;
+  if (k === 'Enter') out = '\r';
+  else if (k === 'Backspace') out = '\x7f';
+  else if (k === 'Tab') out = '\t';
+  else if (k === 'Escape') out = '\x1b';
+  else if (k === 'ArrowUp') out = '\x1b[A';
+  else if (k === 'ArrowDown') out = '\x1b[B';
+  else if (k === 'ArrowRight') out = '\x1b[C';
+  else if (k === 'ArrowLeft') out = '\x1b[D';
+  else if (k === 'Home') out = '\x1b[H';
+  else if (k === 'End') out = '\x1b[F';
+  else if (e.ctrlKey && k.length === 1) {
+    const code = k.toLowerCase().charCodeAt(0);
+    if (code >= 97 && code <= 122) out = String.fromCharCode(code - 96);
+  }
+  else if (k.length === 1 && !e.metaKey) out = k;
+  if (out !== null) { e.preventDefault(); ws && ws.send(JSON.stringify({ type: 'data', data: out })); }
+});
+
+screenEl.addEventListener('paste', e => {
+  if (!connected) return;
+  e.preventDefault();
+  const t = (e.clipboardData || window.clipboardData).getData('text');
+  if (t) ws.send(JSON.stringify({ type: 'data', data: t }));
+});
+
+function setStatus(txt, cls) { statusEl.textContent = txt; statusEl.className = 'status ' + (cls || ''); }
+
+function connect() {
+  if (connected) return;
+  const ip = document.getElementById('ip').value.trim();
+  if (!ip) { alert('IP 주소를 입력하세요'); return; }
+  const cfg = {
+    ip,
+    port: parseInt(document.getElementById('port').value) || 22,
+    username: document.getElementById('user').value.trim() || 'root',
+    password: document.getElementById('pass').value,
+    cols: 120, rows: 34,
+  };
+  lines = ['']; cy = 0; cx = 0; render();
+  feed(`SSH 연결 중… ${cfg.username}@${ip}:${cfg.port}\r\n`);
+  setStatus('연결 중…', '');
+  document.getElementById('btn-connect').disabled = true;
+
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  ws = new WebSocket(proto + location.host + '/ws/ssh');
+  ws.onopen = () => ws.send(JSON.stringify(cfg));
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === 'data') feed(m.data);
+    else if (m.type === 'status') {
+      if (m.data.startsWith('connected')) {
+        connected = true;
+        setStatus('● ' + m.data.replace('connected ', ''), 'on');
+        document.getElementById('btn-connect').style.display = 'none';
+        document.getElementById('btn-disconnect').style.display = '';
+        screenEl.focus();
+      } else if (m.data === 'disconnected') {
+        onClosed('세션 종료됨');
+      }
+    }
+    else if (m.type === 'error') {
+      feed(`\r\n*** ${m.data} ***\r\n`);
+      onClosed('접속 실패');
+    }
+  };
+  ws.onclose = () => onClosed('연결 끊김');
+  ws.onerror = () => { feed('\r\n*** WebSocket 오류 ***\r\n'); };
+}
+
+function onClosed(msg) {
+  connected = false;
+  setStatus(msg, 'off');
+  document.getElementById('btn-connect').style.display = '';
+  document.getElementById('btn-connect').disabled = false;
+  document.getElementById('btn-disconnect').style.display = 'none';
+  try { ws && ws.close(); } catch (e) {}
+  ws = null;
+}
+
+function disconnect() {
+  if (ws) { try { ws.send(JSON.stringify({ type: 'data', data: '\x04' })); } catch (e) {} }
+  onClosed('종료됨');
+}
+
+window.addEventListener('beforeunload', () => { try { ws && ws.close(); } catch (e) {} });
+</script>
+</body>
+</html>

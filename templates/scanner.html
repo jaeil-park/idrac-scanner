@@ -260,6 +260,7 @@
   </a>
   <a class="nav-tab active" href="/">스캐너</a>
   <a class="nav-tab" href="/config">일괄 설정</a>
+  <a class="nav-tab" href="/console">SSH 콘솔</a>
   <button class="sc-btn" id="sc-toggle" onclick="toggleScPanel()">🔢 서브넷 계산기</button>
 </nav>
 
@@ -438,6 +439,38 @@
     </div>
   </div>
 </div>
+
+<!-- 하드웨어 정보 모달 -->
+<div class="modal-overlay" id="hw-modal">
+  <div class="modal" style="width:720px;max-width:96vw;max-height:88vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <h3 style="margin:0">🔧 하드웨어 정보 — <span class="modal-ip" id="hw-modal-ip"></span></h3>
+      <span id="hw-cache-note" style="font-size:.7rem;color:var(--muted)"></span>
+      <div style="margin-left:auto;display:flex;gap:6px">
+        <button class="btn" id="hw-fw-btn" style="padding:5px 12px;font-size:.78rem;background:var(--s2);color:var(--txt);border:1px solid var(--bdr)" onclick="loadHwFirmware()">펌웨어 목록</button>
+        <button class="btn" id="hw-refresh-btn" style="padding:5px 12px;font-size:.78rem;background:var(--accent);color:#fff" onclick="refreshHw()">↻ 새로고침</button>
+        <button class="btn btn-cancel" style="padding:5px 12px;font-size:.78rem" onclick="closeHwModal()">닫기</button>
+      </div>
+    </div>
+    <div id="hw-modal-body"><div class="empty" style="padding:30px">불러오는 중…</div></div>
+  </div>
+</div>
+
+<style>
+  #hw-modal .hw-sec { margin-bottom:16px; }
+  #hw-modal .hw-sec h4 { font-size:.8rem; color:var(--accent); text-transform:uppercase; letter-spacing:.05em; margin-bottom:7px; border-bottom:1px solid var(--bdr); padding-bottom:4px; }
+  #hw-modal table.hw-t { width:100%; border-collapse:collapse; font-size:.78rem; }
+  #hw-modal table.hw-t th, #hw-modal table.hw-t td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--s2); vertical-align:top; }
+  #hw-modal table.hw-t th { color:var(--muted); font-weight:600; white-space:nowrap; }
+  #hw-modal .hw-kv { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:6px 16px; font-size:.8rem; }
+  #hw-modal .hw-kv > div { display:flex; gap:6px; }
+  #hw-modal .hw-kv .k { color:var(--muted); min-width:82px; }
+  #hw-modal .hw-kv .v { color:var(--txt); font-family:monospace; word-break:break-all; }
+  #hw-modal .hh { font-weight:700; }
+  #hw-modal .hh.OK, #hw-modal .hh.ok, #hw-modal .hh.Enabled { color:var(--green); }
+  #hw-modal .hh.Warning { color:var(--yellow); }
+  #hw-modal .hh.Critical { color:var(--red); }
+</style>
 
 <script>
 // ── 상태 ─────────────────────────────────────────────────────
@@ -805,7 +838,7 @@ function addIdracCard(h) {
 function cardHtml(h, kn) {
   const badge    = kn ? knownBadgeHtml(kn) : '';
   const httpsUrl = `https://${h.ip}`;
-  const svcTag   = h.service_tag ? `<span class="card-svc-tag" style="font-family:monospace;font-size:.8rem;color:var(--accent);font-weight:700">${esc(h.service_tag)}</span>` : '<span class="card-svc-tag"></span>';
+  const svcTag   = h.service_tag ? `<span class="card-svc-tag sn-link" style="font-family:monospace;font-size:.8rem;color:var(--accent);font-weight:700;cursor:pointer;border-bottom:1px dashed rgba(56,139,253,.5)" title="클릭 → 하드웨어 정보" onclick="event.stopPropagation();openHwModal('${h.ip}')">${esc(h.service_tag)}</span>` : '<span class="card-svc-tag"></span>';
   const model    = h.model ? `<span class="card-model" style="font-size:.73rem;color:var(--muted)">${esc(h.model)}</span>` : '<span class="card-model" style="font-size:.73rem;color:var(--muted)"></span>';
   const chk      = selectedIPs.has(h.ip);
   return `
@@ -828,6 +861,7 @@ function cardHtml(h, kn) {
     <div class="card-btns">
       <button class="copy-btn" onclick="window.open('${httpsUrl}','_blank')">🔗 열기</button>
       <button class="copy-btn" onclick="copy('${h.ip}',this)">IP 복사</button>
+      <button class="copy-btn" onclick="openHwModal('${h.ip}')">🔍 HW 정보</button>
       <button class="copy-btn" onclick="openModal('${h.ip}','${h.mac||''}')">
         ${kn ? '등록 수정' : '+ 등록'}
       </button>
@@ -885,7 +919,9 @@ function renderTable() {
     const parentLabel = h.parent_idrac && !kn
       ? `<div style="font-size:.7rem;color:#a371f7;margin-top:2px">iDRAC: ${h.parent_idrac}</div>` : '';
     const httpsUrl = `https://${h.ip}`;
-    const svcTag  = h.service_tag ? `<span style="font-family:monospace;color:var(--accent);font-weight:700">${esc(h.service_tag)}</span>` : '<span style="color:var(--muted)">—</span>';
+    const svcTag  = h.service_tag
+      ? `<span class="sn-link" style="font-family:monospace;color:var(--accent);font-weight:700;cursor:pointer;border-bottom:1px dashed rgba(56,139,253,.5)" title="클릭 → 하드웨어 정보" onclick="openHwModal('${h.ip}')">${esc(h.service_tag)}</span>`
+      : (h.is_idrac ? `<span class="sn-link" style="color:var(--muted);cursor:pointer;border-bottom:1px dashed var(--bdr)" title="하드웨어 정보 조회" onclick="openHwModal('${h.ip}')">🔍 HW</span>` : '<span style="color:var(--muted)">—</span>');
     const model   = h.model ? `<span style="font-size:.73rem;color:var(--txt)">${esc(h.model)}</span>` : '<span style="color:var(--muted);font-size:.73rem">—</span>';
 
     return `<tr class="${rowCls}" id="row-${h.ip.replace(/\./g,'_')}">
@@ -1151,6 +1187,169 @@ function copy(text, btn) {
     const o = btn.textContent; btn.textContent = '✓ 복사됨';
     setTimeout(() => btn.textContent = o, 1500);
   });
+}
+
+// ── 하드웨어 정보 모달 ──────────────────────────────────────────
+let hwCurrentIp = null;
+
+function openHwModal(ip) {
+  hwCurrentIp = ip;
+  document.getElementById('hw-modal-ip').textContent = ip;
+  document.getElementById('hw-cache-note').textContent = '';
+  document.getElementById('hw-modal-body').innerHTML =
+    '<div class="empty" style="padding:30px"><span style="opacity:.6">⏳</span> Redfish 조회 중… (최초 조회는 몇 초 걸릴 수 있습니다)</div>';
+  document.getElementById('hw-modal').classList.add('show');
+  fetchHw(ip, false, false);
+}
+function closeHwModal() { document.getElementById('hw-modal').classList.remove('show'); }
+function refreshHw() { if (hwCurrentIp) fetchHw(hwCurrentIp, true, false); }
+function loadHwFirmware() { if (hwCurrentIp) fetchHw(hwCurrentIp, false, true); }
+
+document.getElementById('hw-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('hw-modal')) closeHwModal();
+});
+
+async function fetchHw(ip, refresh, wantFw) {
+  const body = document.getElementById('hw-modal-body');
+  const rbtn = document.getElementById('hw-refresh-btn');
+  rbtn.disabled = true; rbtn.textContent = '조회 중…';
+  if (refresh || wantFw)
+    body.innerHTML = '<div class="empty" style="padding:30px">⏳ ' +
+      (wantFw ? '펌웨어 인벤토리 조회 중… (수십 초 소요)' : 'Redfish 재조회 중…') + '</div>';
+  try {
+    const qs = [];
+    if (refresh) qs.push('refresh=1');
+    if (wantFw)  qs.push('fw=1');
+    const r = await fetch(`/api/hw_info/${encodeURIComponent(ip)}${qs.length?'?'+qs.join('&'):''}`);
+    const d = await r.json();
+    renderHw(d);
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="padding:30px;color:var(--red)">조회 실패: ${esc(e.message)}</div>`;
+  } finally {
+    rbtn.disabled = false; rbtn.textContent = '↻ 새로고침';
+  }
+}
+
+function hwH(v) { return `<span class="hh ${esc(v)}">${esc(v||'—')}</span>`; }
+function hwRow(k, v) { return (v === '' || v == null) ? '' : `<div><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`; }
+
+function renderHw(d) {
+  const body = document.getElementById('hw-modal-body');
+  const note = document.getElementById('hw-cache-note');
+  if (!d.ok) {
+    body.innerHTML = `<div class="empty" style="padding:30px;color:var(--red)">${esc(d.error || '조회 실패')}</div>`;
+    note.textContent = '';
+    return;
+  }
+  note.textContent = d.cached
+    ? `캐시 · ${d.cached_at || ''}` : `조회 · ${d.fetched_at || ''}`;
+
+  const s = d.system || {}, id = d.idrac || {}, pw = d.power || {};
+  let h = '';
+
+  // 시스템 요약
+  h += `<div class="hw-sec"><h4>시스템</h4><div class="hw-kv">
+    ${hwRow('모델', s.model)}${hwRow('제조사', s.manufacturer)}
+    ${hwRow('서비스태그', s.service_tag)}${hwRow('호스트명', s.hostname)}
+    ${hwRow('BIOS', s.bios_version)}
+    <div><span class="k">전원</span><span class="v">${esc(s.power_state||'—')}</span></div>
+    <div><span class="k">상태</span><span class="v">${hwH(s.health)}</span></div>
+    ${hwRow('CPU', (s.cpu_count?s.cpu_count+' × ':'') + (s.cpu_model||''))}
+    ${hwRow('메모리', s.mem_total_gib ? s.mem_total_gib + ' GiB' : '')}
+    ${hwRow('식별 LED', s.indicator_led)}
+  </div></div>`;
+
+  // iDRAC
+  h += `<div class="hw-sec"><h4>iDRAC</h4><div class="hw-kv">
+    ${hwRow('펌웨어', id.firmware_version)}${hwRow('모델', id.model)}
+    ${hwRow('시각', id.datetime)}
+    <div><span class="k">상태</span><span class="v">${hwH(id.health)}</span></div>
+  </div></div>`;
+
+  // CPU
+  if ((d.processors||[]).length) {
+    h += `<div class="hw-sec"><h4>프로세서 (${d.processors.length})</h4>
+      <table class="hw-t"><tr><th>ID</th><th>모델</th><th>코어/스레드</th><th>속도</th><th>상태</th></tr>
+      ${d.processors.map(p => `<tr><td>${esc(p.id)}</td><td>${esc(p.model)}</td>
+        <td>${esc(p.cores)}${p.threads?' / '+esc(p.threads):''}</td>
+        <td>${p.speed_mhz?esc(p.speed_mhz)+' MHz':'—'}</td><td>${hwH(p.health||p.state)}</td></tr>`).join('')}
+      </table></div>`;
+  }
+
+  // 메모리
+  if ((d.memory||[]).length) {
+    h += `<div class="hw-sec"><h4>메모리 (${d.memory.length})</h4>
+      <table class="hw-t"><tr><th>슬롯</th><th>용량</th><th>속도</th><th>타입</th><th>제조사</th><th>파트번호</th><th>상태</th></tr>
+      ${d.memory.map(m => `<tr><td>${esc(m.locator)}</td>
+        <td>${m.capacity_gib?esc(m.capacity_gib)+' GiB':'—'}</td>
+        <td>${m.speed_mhz?esc(m.speed_mhz):'—'}</td><td>${esc(m.type)}</td>
+        <td>${esc(m.manufacturer)}</td><td>${esc(m.part_number)}</td>
+        <td>${hwH(m.health||m.state)}</td></tr>`).join('')}
+      </table></div>`;
+  }
+
+  // 스토리지
+  if ((d.storage||[]).length) {
+    h += `<div class="hw-sec"><h4>스토리지</h4>`;
+    for (const c of d.storage) {
+      h += `<div style="font-size:.78rem;margin:6px 0 3px"><b>${esc(c.model||c.name)}</b>
+        ${c.firmware?`<span style="color:var(--muted)"> · FW ${esc(c.firmware)}</span>`:''}
+        ${c.health?` · ${hwH(c.health)}`:''}</div>`;
+      if ((c.drives||[]).length) {
+        h += `<table class="hw-t"><tr><th>이름</th><th>용량</th><th>미디어</th><th>프로토콜</th><th>모델</th><th>시리얼</th><th>상태</th></tr>
+        ${c.drives.map(x => `<tr><td>${esc(x.name)}</td>
+          <td>${x.capacity_gb?esc(x.capacity_gb)+' GB':'—'}</td>
+          <td>${esc(x.media)}</td><td>${esc(x.proto)}</td><td>${esc(x.model)}</td>
+          <td>${esc(x.serial)}</td><td>${hwH(x.health||x.state)}</td></tr>`).join('')}
+        </table>`;
+      } else {
+        h += `<div style="font-size:.74rem;color:var(--muted)">드라이브 없음</div>`;
+      }
+    }
+    h += `</div>`;
+  }
+
+  // 네트워크
+  if ((d.network||[]).length) {
+    h += `<div class="hw-sec"><h4>네트워크 인터페이스 (${d.network.length})</h4>
+      <table class="hw-t"><tr><th>ID</th><th>이름</th><th>MAC</th><th>속도</th><th>링크</th><th>상태</th></tr>
+      ${d.network.map(n => `<tr><td>${esc(n.id)}</td><td>${esc(n.name)}</td>
+        <td style="font-family:monospace">${esc(n.mac)}</td>
+        <td>${n.speed_mbps?esc(n.speed_mbps)+' Mbps':'—'}</td>
+        <td>${esc(n.link)}</td><td>${hwH(n.health)}</td></tr>`).join('')}
+      </table></div>`;
+  }
+
+  // 전원
+  if ((pw.supplies||[]).length || pw.consumed_w !== '') {
+    h += `<div class="hw-sec"><h4>전원</h4>`;
+    if (pw.consumed_w !== '' || pw.capacity_w !== '')
+      h += `<div class="hw-kv" style="margin-bottom:6px">
+        ${hwRow('소비 전력', pw.consumed_w !== '' ? pw.consumed_w + ' W' : '')}
+        ${hwRow('용량', pw.capacity_w !== '' ? pw.capacity_w + ' W' : '')}</div>`;
+    if ((pw.supplies||[]).length)
+      h += `<table class="hw-t"><tr><th>이름</th><th>모델</th><th>용량</th><th>입력</th><th>FW</th><th>시리얼</th><th>상태</th></tr>
+      ${pw.supplies.map(p => `<tr><td>${esc(p.name)}</td><td>${esc(p.model)}</td>
+        <td>${p.capacity_w?esc(p.capacity_w)+' W':'—'}</td>
+        <td>${p.input_w?esc(p.input_w)+' W':'—'}</td>
+        <td>${esc(p.firmware)}</td><td>${esc(p.serial)}</td>
+        <td>${hwH(p.health||p.state)}</td></tr>`).join('')}
+      </table>`;
+    h += `</div>`;
+  }
+
+  // 펌웨어 인벤토리
+  if ((d.firmware||[]).length) {
+    h += `<div class="hw-sec"><h4>펌웨어 인벤토리 (${d.firmware.length})</h4>
+      <table class="hw-t"><tr><th>구성요소</th><th>버전</th><th>업데이트 가능</th></tr>
+      ${d.firmware.map(f => `<tr><td>${esc(f.name)}</td><td style="font-family:monospace">${esc(f.version)}</td>
+        <td>${f.updateable === true ? '예' : f.updateable === false ? '아니오' : '—'}</td></tr>`).join('')}
+      </table></div>`;
+  } else {
+    h += `<div style="font-size:.75rem;color:var(--muted)">펌웨어 인벤토리는 상단 “펌웨어 목록” 버튼으로 조회 (수십 초 소요)</div>`;
+  }
+
+  body.innerHTML = h;
 }
 </script>
 </div><!-- /padding wrapper -->

@@ -144,6 +144,8 @@ body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:
 .step-eng  { width:58px; flex-shrink:0; font-size:.68rem; font-weight:600; padding:2px 6px; border-radius:4px; text-align:center; }
 .step-eng.redfish { background:rgba(56,139,253,.15); color:var(--accent); }
 .step-eng.racadm  { background:rgba(163,113,247,.15); color:var(--purple); }
+.step-eng.scp     { background:rgba(63,185,80,.12);  color:var(--green); }
+.step-eng.fw      { background:rgba(210,153,34,.15); color:var(--yellow); }
 .step-cmd  { flex:1; font-family:monospace; color:var(--muted); word-break:break-all; }
 .step-out  { flex:2; color:var(--txt); word-break:break-all; white-space:pre-wrap; }
 .step-ok   { flex-shrink:0; font-weight:700; }
@@ -218,10 +220,12 @@ body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:
   </a>
   <a class="nav-tab" href="/">스캐너</a>
   <a class="nav-tab active" href="/config">일괄 설정</a>
+  <a class="nav-tab" href="/console">SSH 콘솔</a>
   <div class="nav-right">
     <div class="mode-toggle">
       <button class="mode-btn active" id="mode-btn-preset" onclick="setMode('preset')">프리셋</button>
-      <button class="mode-btn" id="mode-btn-scp" onclick="setMode('scp')">📋 SCP 프로파일</button>
+      <button class="mode-btn" id="mode-btn-scp" onclick="setMode('scp')">📋 SCP</button>
+      <button class="mode-btn" id="mode-btn-fw" onclick="setMode('fw')">🔄 펌웨어</button>
     </div>
     <span id="racadm-badge" class="badge badge-red">racadm 확인 중…</span>
   </div>
@@ -372,6 +376,74 @@ body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:
       <div id="scp-no-profile" class="empty" style="display:none">위 프로파일을 클릭하세요</div>
     </div>
 
+    <!-- ── 펌웨어 업데이트 컨텐츠 ── -->
+    <div class="panel-body" id="fw-content" style="display:none">
+      <div class="info-box">
+        선택한 iDRAC(9세대 / Redfish)에 Dell 펌웨어 패키지(<code>.EXE</code> Windows DUP 또는 <code>.d9</code>)를
+        업로드해 설치합니다. RAID/BIOS/NIC 등은 <b>재부팅 시 적용(OnReset)</b> 권장.<br>
+        여러 대를 선택하면 순차 진행되며, 각 장비의 저장된 자격증명을 사용합니다.
+      </div>
+
+      <div class="tabs" id="fw-src-tabs">
+        <div class="tab active" onclick="setFwSrc('file',this)">파일 업로드</div>
+        <div class="tab" onclick="setFwSrc('lib',this)">📁 NAS 라이브러리</div>
+        <div class="tab" onclick="setFwSrc('uri',this)">이미지 URI (공유)</div>
+      </div>
+
+      <div id="fw-src-file">
+        <div class="field">
+          <label>펌웨어 파일</label>
+          <input type="file" id="fw-file" accept=".exe,.EXE,.d9,.pm,.bin">
+          <div class="var-note" id="fw-file-note">Dell 지원 사이트에서 받은 iDRAC/BIOS/PERC 등 DUP 파일</div>
+        </div>
+      </div>
+
+      <div id="fw-src-lib" style="display:none">
+        <div class="var-note" id="fw-lib-dir" style="margin-bottom:6px">라이브러리 경로 확인 중…</div>
+        <div style="display:flex;gap:6px;margin-bottom:6px">
+          <input class="search-inp" style="margin:0" id="fw-lib-search" placeholder="파일명 검색…" oninput="renderFwLib()">
+          <button class="btn btn-ghost btn-sm" onclick="loadFwLib()">↻</button>
+        </div>
+        <div id="fw-lib-list" style="max-height:230px;overflow-y:auto"><div class="empty">불러오는 중…</div></div>
+        <div id="fw-lib-selected" style="font-size:.76rem;color:var(--green);margin-top:6px"></div>
+      </div>
+
+      <div id="fw-src-uri" style="display:none">
+        <div class="field"><label>이미지 URI</label>
+          <input id="fw-uri" placeholder="http://192.168.1.5/firmimg.d9 또는 //share/path/img.exe">
+        </div>
+        <div class="field"><label>전송 프로토콜</label>
+          <select id="fw-proto">
+            <option>HTTP</option><option>HTTPS</option><option>NFS</option>
+            <option>CIFS</option><option>TFTP</option><option>FTP</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="field"><label>공유 사용자 (선택)</label><input id="fw-share-user"></div>
+          <div class="field"><label>공유 비밀번호 (선택)</label><input id="fw-share-pass" type="password"></div>
+        </div>
+      </div>
+
+      <hr class="divider">
+      <div class="field">
+        <label>적용 시점</label>
+        <select id="fw-apply">
+          <option value="Immediate">Immediate — 즉시 설치 (필요 시 자동 재부팅)</option>
+          <option value="OnReset">OnReset — 다음 재부팅 시 설치</option>
+        </select>
+      </div>
+
+      <details style="margin-top:6px">
+        <summary style="font-size:.75rem;color:var(--muted);cursor:pointer;margin-bottom:8px">이번 실행에만 공통 자격증명 사용</summary>
+        <div class="field"><label>사용자명</label><input id="fw-cc-user" value="root"></div>
+        <div class="field"><label>비밀번호</label><input id="fw-cc-pass" type="password" placeholder="(각 IP별 저장값 사용)"></div>
+      </details>
+
+      <div class="info-box" style="border-color:rgba(210,153,34,.4);background:rgba(210,153,34,.08);color:var(--yellow)">
+        ⚠ 펌웨어 설치 중 전원을 차단하지 마세요. 대상 서버가 재부팅될 수 있습니다.
+      </div>
+    </div>
+
     <div class="panel-footer" style="display:flex; gap:8px">
       <!-- 프리셋 모드 버튼 -->
       <div id="preset-footer-btns" style="display:flex;gap:8px;width:100%">
@@ -383,6 +455,11 @@ body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:
         <button class="btn btn-ghost btn-sm" onclick="openScpEditor(null)" style="flex:1">+ 프로파일 생성</button>
         <button class="btn btn-ghost btn-sm" onclick="openScpExportModal()">↓ iDRAC에서 가져오기</button>
         <button class="btn btn-green" id="scp-exec-btn" onclick="runScpApply()" disabled>▶ SCP 적용</button>
+      </div>
+      <!-- 펌웨어 모드 버튼 -->
+      <div id="fw-footer-btns" style="display:none;gap:8px;width:100%">
+        <span id="fw-target-note" style="flex:1;font-size:.74rem;color:var(--muted);align-self:center"></span>
+        <button class="btn btn-green" id="fw-exec-btn" onclick="runFwUpdate()">▶ 펌웨어 적용</button>
       </div>
     </div>
   </div>
@@ -699,6 +776,7 @@ function renderTargets() {
   }).join('');
   document.getElementById('sel-count').textContent = selectedIPs.size;
   updateExecBtn();
+  if (typeof updateFwNote === 'function') updateFwNote();
 }
 
 function toggleIP(ip, el) {
@@ -730,6 +808,7 @@ function applyManualIps() {
   document.getElementById('sel-count').textContent  = selectedIPs.size;
   document.getElementById('total-count').textContent = manualIPs.length;
   updateExecBtn();
+  if (typeof updateFwNote === 'function') updateFwNote();
   alert(`${manualIPs.length}개 IP 적용됨`);
 }
 
@@ -1191,17 +1270,148 @@ let currentMode = 'preset';
 
 function setMode(mode) {
   currentMode = mode;
-  const isPreset = mode === 'preset';
-  document.getElementById('mode-btn-preset').classList.toggle('active', isPreset);
-  document.getElementById('mode-btn-scp').classList.toggle('active', !isPreset);
-  document.getElementById('panel2-hdr').textContent = isPreset ? '프리셋 선택 & 변수 설정' : 'SCP 프로파일';
+  document.getElementById('mode-btn-preset').classList.toggle('active', mode === 'preset');
+  document.getElementById('mode-btn-scp').classList.toggle('active', mode === 'scp');
+  document.getElementById('mode-btn-fw').classList.toggle('active', mode === 'fw');
+  document.getElementById('panel2-hdr').textContent =
+    mode === 'preset' ? '프리셋 선택 & 변수 설정' :
+    mode === 'scp'    ? 'SCP 프로파일' : '펌웨어 이미지';
 
-  document.getElementById('preset-panel-body').style.display = isPreset ? '' : 'none';
-  document.getElementById('scp-content').style.display       = isPreset ? 'none' : '';
-  document.getElementById('preset-footer-btns').style.display = isPreset ? 'flex' : 'none';
-  document.getElementById('scp-footer-btns').style.display    = isPreset ? 'none' : 'flex';
+  document.getElementById('preset-panel-body').style.display  = mode === 'preset' ? '' : 'none';
+  document.getElementById('scp-content').style.display        = mode === 'scp'    ? '' : 'none';
+  document.getElementById('fw-content').style.display         = mode === 'fw'     ? '' : 'none';
+  document.getElementById('preset-footer-btns').style.display = mode === 'preset' ? 'flex' : 'none';
+  document.getElementById('scp-footer-btns').style.display    = mode === 'scp'    ? 'flex' : 'none';
+  document.getElementById('fw-footer-btns').style.display     = mode === 'fw'     ? 'flex' : 'none';
 
-  if (!isPreset) loadScpProfiles();
+  if (mode === 'scp') loadScpProfiles();
+  if (mode === 'fw')  updateFwNote();
+}
+
+function getSelectedTargets() {
+  return [...selectedIPs];
+}
+
+// ════════════════════════════════════════════════════════
+//  펌웨어 업데이트
+// ════════════════════════════════════════════════════════
+let fwSrc = 'file';
+let fwLibFiles = [];
+let fwLibPath = '';
+let fwLibLoaded = false;
+
+function setFwSrc(src, el) {
+  fwSrc = src;
+  document.querySelectorAll('#fw-src-tabs .tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('fw-src-file').style.display = src === 'file' ? '' : 'none';
+  document.getElementById('fw-src-lib').style.display  = src === 'lib'  ? '' : 'none';
+  document.getElementById('fw-src-uri').style.display  = src === 'uri'  ? '' : 'none';
+  if (src === 'lib' && !fwLibLoaded) loadFwLib();
+}
+
+function updateFwNote() {
+  const n = document.getElementById('fw-target-note');
+  const t = getSelectedTargets();
+  n.textContent = t.length ? `${t.length}개 대상: ${t.slice(0,4).join(', ')}${t.length>4?' …':''}` : '대상 iDRAC를 선택하세요';
+}
+
+async function loadFwLib() {
+  fwLibLoaded = true;
+  const listEl = document.getElementById('fw-lib-list');
+  listEl.innerHTML = '<div class="empty">불러오는 중…</div>';
+  try {
+    const r = await fetch('/api/fw_files');
+    const d = await r.json();
+    const dirEl = document.getElementById('fw-lib-dir');
+    if (!d.configured) {
+      dirEl.innerHTML = '<span style="color:var(--yellow)">⚠ FW_LIB_DIR 미설정</span> — docker-compose 에 펌웨어 디렉토리를 마운트하고 <code>FW_LIB_DIR</code> 환경변수를 지정하세요.';
+      fwLibFiles = [];
+      listEl.innerHTML = '<div class="empty">라이브러리 미설정</div>';
+      return;
+    }
+    dirEl.innerHTML = `경로: <code>${esc(d.dir)}</code> · ${d.count}개 파일`;
+    fwLibFiles = d.files || [];
+    renderFwLib();
+  } catch (e) {
+    listEl.innerHTML = '<div class="empty" style="color:var(--red)">불러오기 실패</div>';
+  }
+}
+
+function renderFwLib() {
+  const q = (document.getElementById('fw-lib-search').value || '').toLowerCase();
+  const listEl = document.getElementById('fw-lib-list');
+  const rows = fwLibFiles.filter(f => !q || f.path.toLowerCase().includes(q));
+  if (!rows.length) { listEl.innerHTML = '<div class="empty">일치하는 파일 없음</div>'; return; }
+  listEl.innerHTML = rows.slice(0, 300).map(f => {
+    const sel = f.path === fwLibPath;
+    return `<div class="target-item ${sel ? 'checked' : ''}" onclick="selectFwLib('${esc(f.path).replace(/'/g,"\\'")}')" style="cursor:pointer">
+      <div style="flex:1;min-width:0">
+        <div style="font-family:monospace;font-size:.8rem;word-break:break-all">${esc(f.name)}</div>
+        <div class="target-lbl">${esc(f.path)}</div>
+      </div>
+      <span style="font-size:.7rem;color:var(--muted);white-space:nowrap">${f.size_mb} MB<br>${esc(f.mtime)}</span>
+    </div>`;
+  }).join('');
+}
+
+function selectFwLib(path) {
+  fwLibPath = path;
+  renderFwLib();
+  document.getElementById('fw-lib-selected').textContent = '선택됨: ' + path;
+}
+
+async function runFwUpdate() {
+  const targets = getSelectedTargets();
+  if (!targets.length) { alert('대상 iDRAC를 선택하세요'); return; }
+
+  const fd = new FormData();
+  fd.append('targets', JSON.stringify(targets));
+  fd.append('apply_time', document.getElementById('fw-apply').value);
+
+  if (fwSrc === 'file') {
+    const f = document.getElementById('fw-file').files[0];
+    if (!f) { alert('펌웨어 파일을 선택하세요'); return; }
+    fd.append('file', f);
+  } else if (fwSrc === 'lib') {
+    if (!fwLibPath) { alert('NAS 라이브러리에서 파일을 선택하세요'); return; }
+    fd.append('lib_path', fwLibPath);
+  } else {
+    const uri = document.getElementById('fw-uri').value.trim();
+    if (!uri) { alert('이미지 URI를 입력하세요'); return; }
+    fd.append('image_uri', uri);
+    fd.append('transfer_protocol', document.getElementById('fw-proto').value);
+    fd.append('share_user', document.getElementById('fw-share-user').value.trim());
+    fd.append('share_pass', document.getElementById('fw-share-pass').value);
+  }
+
+  const ccPass = document.getElementById('fw-cc-pass').value;
+  if (ccPass) {
+    fd.append('use_common_cred', '1');
+    fd.append('cc_user', document.getElementById('fw-cc-user').value);
+    fd.append('cc_pass', ccPass);
+  }
+
+  if (!confirm(`${targets.length}개 iDRAC에 펌웨어를 적용합니다. 진행할까요?\n(대상 서버가 재부팅될 수 있습니다)`)) return;
+
+  sessionStorage.removeItem('config_result_html');
+  sessionStorage.removeItem('config_result_summary');
+  document.getElementById('result-empty').style.display = 'none';
+  document.getElementById('result-list').innerHTML = '';
+  document.getElementById('result-footer').style.display = 'none';
+  document.getElementById('fw-exec-btn').disabled = true;
+
+  try {
+    const r = await fetch('/api/fw_update', { method: 'POST', body: fd });
+    const { job_id, error } = await r.json();
+    if (error) { alert(error); document.getElementById('fw-exec-btn').disabled = false; return; }
+    const es = new EventSource(`/api/fw_update/${job_id}/stream`);
+    es.onmessage = e => handleSseMessage(JSON.parse(e.data), es);
+    es.onerror   = () => { es.close(); document.getElementById('fw-exec-btn').disabled = false; };
+  } catch (err) {
+    alert(err.message);
+    document.getElementById('fw-exec-btn').disabled = false;
+  }
 }
 
 // ════════════════════════════════════════════════════════
@@ -1532,6 +1742,7 @@ function handleSseMessage(data, es) {
     es.close();
     document.getElementById('exec-btn').disabled = false;
     document.getElementById('scp-exec-btn').disabled = false;
+    document.getElementById('fw-exec-btn').disabled = false;
     const footer = document.getElementById('result-footer');
     footer.style.display = '';
     const ts = data.ts || '';
@@ -1544,6 +1755,7 @@ function handleSseMessage(data, es) {
     es.close();
     document.getElementById('exec-btn').disabled = false;
     document.getElementById('scp-exec-btn').disabled = false;
+    document.getElementById('fw-exec-btn').disabled = false;
     document.getElementById('result-list').insertAdjacentHTML('beforeend',
       `<div class="empty" style="color:var(--red)">${esc(data.msg)}</div>`);
   }

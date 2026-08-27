@@ -16,6 +16,8 @@ services:
       - PYTHONUNBUFFERED=1
       - PORT=5010
       - DB_PATH=/data/known_devices.db
+      # NAS 펌웨어 보관 디렉토리 (아래 volumes 에서 컨테이너로 마운트)
+      - FW_LIB_DIR=${FW_LIB_DIR:-/firmware}
       # iDRAC 폴백 자격증명 — .env 파일에 정의하거나 직접 입력
       # 형식: [["root","password1"],["admin","password2"]]
       - IDRAC_FALLBACK_CREDS=${IDRAC_FALLBACK_CREDS:-[["root","calvin"]]}
@@ -33,6 +35,9 @@ services:
 
     volumes:
       - idrac_data:/data
+      # NAS 펌웨어 공유를 읽기 전용으로 마운트 (호스트에서 먼저 NAS 마운트 필요)
+      # 예: NFS  →  mount -t nfs nas:/volume1/firmware /mnt/nas-firmware
+      - ${FW_LIB_HOST:-/mnt/nas-firmware}:/firmware:ro
 
     logging:
       driver: json-file
