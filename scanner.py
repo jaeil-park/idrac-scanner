@@ -681,23 +681,28 @@ def _auth_candidates(ip: str) -> list:
 
 
 def _resolve_auth(ip: str):
-    """인증이 통하는 자격증명을 찾아 (auth, reason) 반환.
-    reason: 'ok' | 'rejected'(모두 401/403) | 'unreachable'(HTTPS 응답 없음)."""
-    test_paths = ["/redfish/v1/Managers/iDRAC.Embedded.1",
-                  "/redfish/v1/Systems/System.Embedded.1"]
+    """인증이 통하는 자격증명을 찾아 (auth, reason, probe) 반환.
+    reason: 'ok' | 'rejected'(모두 401/403) | 'unreachable'(HTTPS 응답 없음)
+    probe : [{'user','status'}] — 후보별 마지막 응답 코드 (디버그용)."""
+    test_paths = ["/redfish/v1/Systems/System.Embedded.1",
+                  "/redfish/v1/Managers/iDRAC.Embedded.1"]
     got_http = False
+    probe: list = []
     for auth in _auth_candidates(ip):
+        uname = auth[0] if auth else "(무인증)"
+        last = None
         for tp in test_paths:
             try:
                 r = _req.get(f"https://{ip}{tp}", auth=auth, verify=False, timeout=6)
                 got_http = True
+                last = r.status_code
                 if r.status_code == 200:
-                    return auth, "ok"
-                if r.status_code in (401, 403):
-                    break
+                    probe.append({"user": uname, "status": 200})
+                    return auth, "ok", probe
             except Exception:
-                pass
-    return None, ("rejected" if got_http else "unreachable")
+                last = last or "conn-err"
+        probe.append({"user": uname, "status": last})
+    return None, ("rejected" if got_http else "unreachable"), probe
 
 
 def _fetch_hw_detail(ip: str, want_fw: bool = False) -> dict:
@@ -708,15 +713,16 @@ def _fetch_hw_detail(ip: str, want_fw: bool = False) -> dict:
         "system": {}, "processors": [], "memory": [], "storage": [],
         "network": [], "power": {}, "idrac": {}, "firmware": [],
     }
-    auth, reason = _resolve_auth(ip)
+    auth, reason, probe = _resolve_auth(ip)
     if auth is None:
+        detail = ", ".join(f"{p['user']}→{p['status']}" for p in probe)
         if reason == "unreachable":
-            out["error"] = f"{ip} 443(HTTPS) 응답 없음 — 방화벽/라우팅 또는 iDRAC 상태를 확인하세요."
+            out["error"] = f"{ip} 443(HTTPS) 응답 없음 ({detail}) — 방화벽/라우팅 또는 iDRAC 상태 확인"
         else:
-            users = list(dict.fromkeys(
-                (a[0] if a else "(무인증)") for a in _auth_candidates(ip)))
-            out["error"] = ("모든 자격증명 인증 실패 — 시도한 계정: " + ", ".join(users) +
-                            " · 일괄 설정 → 🔑 자격증명 풀 관리 에 이 iDRAC 계정을 추가하세요.")
+            out["error"] = (f"인증 실패 ({detail}). 해당 iDRAC에 그 계정이 없거나 "
+                            f"비밀번호가 다르거나 Redfish 로그인 권한이 없습니다. "
+                            f"일괄 설정 → 🔑 자격증명 풀 관리 확인.")
+        out["probe"] = probe
         return out
 
     def g(path: str):
