@@ -368,7 +368,7 @@
   <button class="f-btn"         onclick="setFilter('open',this)">포트 열린 장비</button>
   <button class="f-btn new-only" onclick="setFilter('new',this)">🆕 신규만</button>
   <button class="f-btn"         onclick="setFilter('known',this)">📌 등록 장비</button>
-  <button class="f-btn" style="margin-left:auto" onclick="exportXLSX()">⬇ XLSX</button>
+  <button class="f-btn" style="margin-left:auto" onclick="exportXLSX(this)">⬇ XLSX</button>
   <button class="f-btn" style="background:var(--green);color:#fff;border-color:var(--green)" onclick="exportCSV()">⬇ CSV</button>
 </div>
 <input class="search-inp" id="search" type="text" placeholder="IP, MAC, 포트, 레이블로 검색…" oninput="renderTable()">
@@ -565,12 +565,18 @@ function exportCSV() {
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
 }
 
-async function exportXLSX() {
+async function exportXLSX(btn) {
   if (!hosts.length) { alert('스캔 결과가 없습니다.'); return; }
+  const full = confirm(
+    'HW 상세 시트(CPU·메모리·디스크·NIC·PSU 부품별)를 채우기 위해\n' +
+    'HW 정보가 없는 iDRAC 장비도 지금 Redfish로 조회할까요?\n\n' +
+    '확인 = 미조회 장비도 조회 후 내보내기 (느릴 수 있음)\n' +
+    '취소 = 이미 조회된(팝업을 연) 장비 정보만 포함');
+  if (btn) { btn.disabled = true; btn.textContent = '생성 중…'; }
   try {
     const r = await fetch('/api/export/xlsx', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ hosts })
+      body: JSON.stringify({ hosts, fetch_hw: full })
     });
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
@@ -584,6 +590,7 @@ async function exportXLSX() {
     document.body.appendChild(a); a.click();
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
   } catch (e) { alert(e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '⬇ XLSX'; } }
 }
 
 function restoreScanResults() {

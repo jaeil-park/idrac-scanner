@@ -2024,7 +2024,53 @@ def api_export_xlsx():
 
     d = request.json or {}
     hosts = d.get("hosts", [])
+    fetch_hw = bool(d.get("fetch_hw"))
+    fetch_fw = bool(d.get("fetch_fw"))
     known = _known_map()
+    ips = [h.get("ip") for h in hosts if h.get("ip")]
+
+    # ── hw_info 수집: 캐시 우선, 필요 시 실시간 조회 ──
+    hw_by_ip: dict = {}
+    if ips:
+        try:
+            with sqlite3.connect(DB_PATH) as c:
+                ph = ",".join("?" * len(ips))
+                for ip, data_s, upd in c.execute(
+                        f"SELECT ip, data, updated_at FROM hw_info WHERE ip IN ({ph})", ips):
+                    try:
+                        obj = json.loads(data_s)
+                        obj["_updated"] = upd
+                        hw_by_ip[ip] = obj
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if fetch_hw:
+        budget = 40
+        for ip in ips:
+            if budget <= 0:
+                break
+            cur = hw_by_ip.get(ip)
+            if cur and (not fetch_fw or cur.get("firmware")):
+                continue
+            budget -= 1
+            info = _fetch_hw_detail(ip, want_fw=fetch_fw)
+            if info.get("ok"):
+                try:
+                    with sqlite3.connect(DB_PATH) as c:
+                        c.execute(
+                            "INSERT INTO hw_info (ip, data, updated_at) "
+                            "VALUES (?, ?, datetime('now','localtime')) "
+                            "ON CONFLICT(ip) DO UPDATE SET data=excluded.data, "
+                            "updated_at=excluded.updated_at",
+                            (ip, json.dumps(info)))
+                except Exception:
+                    pass
+                info["_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                hw_by_ip[ip] = info
+
+    def _hw(ip):
+        return hw_by_ip.get(ip) or {}
 
     wb = Workbook()
     ws = wb.active
@@ -2047,40 +2093,99 @@ def api_export_xlsx():
             h.get("note", "") or kn.get("note", ""),
         ])
 
-    # HW 요약 (캐시된 hw_info 가 있는 IP만)
-    ips = [h.get("ip") for h in hosts if h.get("ip")]
-    hw_rows = []
-    if ips:
-        try:
-            with sqlite3.connect(DB_PATH) as c:
-                ph = ",".join("?" * len(ips))
-                for ip, data_s, upd in c.execute(
-                        f"SELECT ip, data, updated_at FROM hw_info WHERE ip IN ({ph})", ips):
-                    try:
-                        hw = json.loads(data_s)
-                    except Exception:
-                        continue
-                    s = hw.get("system", {}) or {}
-                    idr = hw.get("idrac", {}) or {}
-                    pw = hw.get("power", {}) or {}
-                    hw_rows.append([
-                        ip, s.get("model", ""), s.get("service_tag", ""),
-                        s.get("bios_version", ""),
-                        (f'{s.get("cpu_count", "")} x {s.get("cpu_model", "")}').strip(" x"),
-                        s.get("mem_total_gib", ""),
-                        sum(len(x.get("drives", [])) for x in hw.get("storage", [])),
-                        len(pw.get("supplies", [])),
-                        idr.get("firmware_version", ""),
-                        s.get("health", ""), upd,
-                    ])
-        except Exception:
-            pass
-    if hw_rows:
-        ws2 = wb.create_sheet("HW요약")
-        ws2.append(["IP", "모델", "서비스태그", "BIOS", "CPU", "메모리(GiB)",
-                    "디스크 수", "PSU 수", "iDRAC FW", "상태", "조회시각"])
-        for r in hw_rows:
-            ws2.append(r)
+    def _sheet(title, headers):
+        sh = wb.create_sheet(title)
+        sh.append(headers)
+        return sh
+
+    # ── HW요약 (호스트 1행) ──
+    sm = _sheet("HW요약", ["IP", "레이블", "모델", "서비스태그", "BIOS", "CPU",
+                           "메모리(GiB)", "디스크 수", "PSU 수", "iDRAC FW", "상태", "조회시각"])
+    for h in hosts:
+        ip = h.get("ip", "")
+        kn = known.get(ip, {})
+        hw = _hw(ip)
+        if not hw:
+            sm.append([ip, kn.get("label", ""), h.get("model", ""),
+                       h.get("service_tag", ""), "", "", "", "", "", "", "(HW 미조회)", ""])
+            continue
+        s = hw.get("system", {}) or {}
+        idr = hw.get("idrac", {}) or {}
+        pw = hw.get("power", {}) or {}
+        sm.append([
+            ip, kn.get("label", ""), s.get("model", ""), s.get("service_tag", ""),
+            s.get("bios_version", ""),
+            (f'{s.get("cpu_count", "")} x {s.get("cpu_model", "")}').strip(" x"),
+            s.get("mem_total_gib", ""),
+            sum(len(x.get("drives", [])) for x in hw.get("storage", [])),
+            len(pw.get("supplies", [])),
+            idr.get("firmware_version", ""),
+            s.get("health", ""), hw.get("_updated", ""),
+        ])
+
+    # ── CPU ──
+    sc = _sheet("CPU", ["IP", "소켓", "모델", "코어", "스레드", "속도(MHz)", "상태"])
+    for h in hosts:
+        ip = h.get("ip", "")
+        for p in _hw(ip).get("processors", []):
+            sc.append([ip, p.get("id", ""), p.get("model", ""), p.get("cores", ""),
+                       p.get("threads", ""), p.get("speed_mhz", ""),
+                       p.get("health") or p.get("state", "")])
+
+    # ── 메모리 ──
+    smem = _sheet("메모리", ["IP", "슬롯", "용량(GiB)", "속도", "타입", "제조사",
+                             "파트번호", "시리얼", "상태"])
+    for h in hosts:
+        ip = h.get("ip", "")
+        for m in _hw(ip).get("memory", []):
+            smem.append([ip, m.get("locator", ""), m.get("capacity_gib", ""),
+                         m.get("speed_mhz", ""), m.get("type", ""), m.get("manufacturer", ""),
+                         m.get("part_number", ""), m.get("serial", ""),
+                         m.get("health") or m.get("state", "")])
+
+    # ── 디스크 ──
+    sd = _sheet("디스크", ["IP", "컨트롤러", "이름", "용량(GB)", "미디어", "프로토콜",
+                           "모델", "시리얼", "상태"])
+    for h in hosts:
+        ip = h.get("ip", "")
+        for ctrl in _hw(ip).get("storage", []):
+            cname = ctrl.get("model") or ctrl.get("name", "")
+            for x in ctrl.get("drives", []):
+                sd.append([ip, cname, x.get("name", ""), x.get("capacity_gb", ""),
+                           x.get("media", ""), x.get("proto", ""), x.get("model", ""),
+                           x.get("serial", ""), x.get("health") or x.get("state", "")])
+
+    # ── 네트워크 ──
+    sn = _sheet("네트워크", ["IP", "ID", "이름", "MAC", "속도(Mbps)", "링크", "상태"])
+    for h in hosts:
+        ip = h.get("ip", "")
+        for n in _hw(ip).get("network", []):
+            sn.append([ip, n.get("id", ""), n.get("name", ""), n.get("mac", ""),
+                       n.get("speed_mbps", ""), n.get("link", ""), n.get("health", "")])
+
+    # ── 전원(PSU) ──
+    sp = _sheet("전원", ["IP", "이름", "모델", "시리얼", "펌웨어", "용량(W)", "입력(W)", "상태"])
+    for h in hosts:
+        ip = h.get("ip", "")
+        for p in (_hw(ip).get("power", {}) or {}).get("supplies", []):
+            sp.append([ip, p.get("name", ""), p.get("model", ""), p.get("serial", ""),
+                       p.get("firmware", ""), p.get("capacity_w", ""), p.get("input_w", ""),
+                       p.get("health") or p.get("state", "")])
+
+    # ── 펌웨어 인벤토리 (데이터 있을 때만) ──
+    if any(_hw(h.get("ip", "")).get("firmware") for h in hosts):
+        sf = _sheet("펌웨어", ["IP", "구성요소", "버전", "업데이트 가능"])
+        for h in hosts:
+            ip = h.get("ip", "")
+            for f in _hw(ip).get("firmware", []):
+                up = f.get("updateable")
+                sf.append([ip, f.get("name", ""), f.get("version", ""),
+                           "예" if up is True else "아니오" if up is False else ""])
+
+    # 헤더만 남은 상세 시트 제거
+    for nm in ["CPU", "메모리", "디스크", "네트워크", "전원"]:
+        if nm in wb.sheetnames and wb[nm].max_row <= 1:
+            del wb[nm]
 
     for sh in wb.worksheets:
         for cell in sh[1]:
