@@ -195,14 +195,34 @@ _BUILTIN_PRESETS = [
         ]),
     },
     {
-        "name": "BIOS PXE 부팅 설정",
-        "description": "PXE 부팅 우선순위 및 네트워크 부팅 설정",
+        "name": "BIOS 부팅 모드 (Redfish)",
+        "description": "BootMode(UEFI/BIOS)·부팅 순서 재시도 설정 — racadm 없이 Redfish로 적용 (다음 재부팅 시)",
         "category": "bios",
-        "engine": "racadm",
+        "engine": "redfish",
+        "variables": json.dumps([
+            {"name": "BOOT_MODE",      "label": "부팅 모드",        "type": "select",
+             "options": ["Uefi", "Bios"], "default": "Uefi", "required": True},
+            {"name": "BOOT_SEQ_RETRY", "label": "부팅 순서 재시도",  "type": "select",
+             "options": ["Enabled", "Disabled"], "default": "Enabled", "required": False},
+        ]),
+        "commands": json.dumps([
+            {"engine": "redfish", "method": "PATCH",
+             "endpoint": "/redfish/v1/Systems/System.Embedded.1/Bios/Settings",
+             "body_template": '{"Attributes":{"BootMode":"{{BOOT_MODE}}","BootSeqRetry":"{{BOOT_SEQ_RETRY}}"},"@Redfish.SettingsApplyTime":{"ApplyTime":"OnReset"}}'},
+        ]),
+    },
+    {
+        "name": "BIOS PXE 부팅 설정",
+        "description": "PXE 네트워크 부팅 활성화 — Redfish(재부팅 시 적용) 또는 racadm",
+        "category": "bios",
+        "engine": "both",
         "variables": json.dumps([
             {"name": "PXE_NIC",  "label": "PXE NIC (예: NIC.Integrated.1-1-1)", "type": "text", "default": "NIC.Integrated.1-1-1", "required": True},
         ]),
         "commands": json.dumps([
+            {"engine": "redfish", "method": "PATCH",
+             "endpoint": "/redfish/v1/Systems/System.Embedded.1/Bios/Settings",
+             "body_template": '{"Attributes":{"BootMode":"Bios","BootSeqRetry":"Enabled","PxeDev1EnDis":"Enabled","PxeDev1Interface":"{{PXE_NIC}}"},"@Redfish.SettingsApplyTime":{"ApplyTime":"OnReset"}}'},
             {"engine": "racadm", "commands": [
                 "set BIOS.BiosBootSettings.BootMode Bios",
                 "set BIOS.BiosBootSettings.BootSeqRetry Enabled",
@@ -302,6 +322,11 @@ def init_db():
                 data       TEXT NOT NULL DEFAULT '{}',
                 updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
+
+            CREATE TABLE IF NOT EXISTS app_meta (
+                k TEXT PRIMARY KEY,
+                v TEXT NOT NULL DEFAULT ''
+            );
         """)
     # 기존 DB 컬럼 마이그레이션
     with sqlite3.connect(DB_PATH) as c:
@@ -313,17 +338,27 @@ def init_db():
     _seed_presets()
 
 
+_BUILTIN_PRESETS_VERSION = 2   # 내장 프리셋 정의가 바뀌면 올릴 것 → 기동 시 재시드
+
+
 def _seed_presets():
     with sqlite3.connect(DB_PATH) as c:
-        count = c.execute("SELECT COUNT(*) FROM presets WHERE builtin=1").fetchone()[0]
-        if count > 0:
+        row = c.execute("SELECT v FROM app_meta WHERE k='builtin_presets_version'").fetchone()
+        ver = int(row[0]) if row and str(row[0]).isdigit() else 0
+        have = c.execute("SELECT COUNT(*) FROM presets WHERE builtin=1").fetchone()[0]
+        if have and ver >= _BUILTIN_PRESETS_VERSION:
             return
+        # 내장 프리셋만 교체 (사용자 정의 builtin=0 프리셋은 보존)
+        c.execute("DELETE FROM presets WHERE builtin=1")
         for p in _BUILTIN_PRESETS:
             c.execute("""
                 INSERT INTO presets (name, description, category, engine, variables, commands, builtin)
                 VALUES (?, ?, ?, ?, ?, ?, 1)
             """, (p["name"], p["description"], p["category"],
                   p["engine"], p["variables"], p["commands"]))
+        c.execute("INSERT INTO app_meta (k, v) VALUES ('builtin_presets_version', ?) "
+                  "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                  (str(_BUILTIN_PRESETS_VERSION),))
 
 
 app = Flask(__name__)
@@ -1973,6 +2008,96 @@ def api_fw_update_stream(job_id):
         stream_with_context(generate()),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ─ XLSX 내보내기 ─────────────────────────────────────────────────
+
+@app.route("/api/export/xlsx", methods=["POST"])
+def api_export_xlsx():
+    from io import BytesIO
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+    except Exception:
+        return jsonify({"error": "openpyxl 미설치 — 이미지를 재빌드하세요"}), 500
+
+    d = request.json or {}
+    hosts = d.get("hosts", [])
+    known = _known_map()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "스캔결과"
+    ws.append(["IP", "서비스태그", "모델", "MAC", "열린 포트", "iDRAC", "Dell",
+               "스캔 방법", "등록 분류", "등록 레이블", "메모"])
+    for h in hosts:
+        kn = known.get(h.get("ip", ""), {})
+        ws.append([
+            h.get("ip", ""),
+            h.get("service_tag", ""),
+            h.get("model", ""),
+            h.get("mac", ""),
+            " ".join(str(p) for p in h.get("open_ports", [])),
+            "Y" if h.get("is_idrac") else "",
+            "Y" if h.get("is_dell") else "",
+            h.get("method", ""),
+            kn.get("category", ""),
+            kn.get("label", ""),
+            h.get("note", "") or kn.get("note", ""),
+        ])
+
+    # HW 요약 (캐시된 hw_info 가 있는 IP만)
+    ips = [h.get("ip") for h in hosts if h.get("ip")]
+    hw_rows = []
+    if ips:
+        try:
+            with sqlite3.connect(DB_PATH) as c:
+                ph = ",".join("?" * len(ips))
+                for ip, data_s, upd in c.execute(
+                        f"SELECT ip, data, updated_at FROM hw_info WHERE ip IN ({ph})", ips):
+                    try:
+                        hw = json.loads(data_s)
+                    except Exception:
+                        continue
+                    s = hw.get("system", {}) or {}
+                    idr = hw.get("idrac", {}) or {}
+                    pw = hw.get("power", {}) or {}
+                    hw_rows.append([
+                        ip, s.get("model", ""), s.get("service_tag", ""),
+                        s.get("bios_version", ""),
+                        (f'{s.get("cpu_count", "")} x {s.get("cpu_model", "")}').strip(" x"),
+                        s.get("mem_total_gib", ""),
+                        sum(len(x.get("drives", [])) for x in hw.get("storage", [])),
+                        len(pw.get("supplies", [])),
+                        idr.get("firmware_version", ""),
+                        s.get("health", ""), upd,
+                    ])
+        except Exception:
+            pass
+    if hw_rows:
+        ws2 = wb.create_sheet("HW요약")
+        ws2.append(["IP", "모델", "서비스태그", "BIOS", "CPU", "메모리(GiB)",
+                    "디스크 수", "PSU 수", "iDRAC FW", "상태", "조회시각"])
+        for r in hw_rows:
+            ws2.append(r)
+
+    for sh in wb.worksheets:
+        for cell in sh[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="374151")
+        sh.freeze_panes = "A2"
+        for col in sh.columns:
+            w = max((len(str(c.value)) for c in col if c.value is not None), default=8)
+            sh.column_dimensions[col[0].column_letter].width = min(max(w + 2, 10), 48)
+
+    bio = BytesIO()
+    wb.save(bio)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        bio.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="idrac_scan_{ts}.xlsx"'},
     )
 
 

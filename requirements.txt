@@ -3,3 +3,4 @@ requests>=2.31
 beautifulsoup4>=4.12
 flask-sock>=0.7
 paramiko>=3.4
+openpyxl>=3.1

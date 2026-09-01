@@ -368,7 +368,8 @@
   <button class="f-btn"         onclick="setFilter('open',this)">포트 열린 장비</button>
   <button class="f-btn new-only" onclick="setFilter('new',this)">🆕 신규만</button>
   <button class="f-btn"         onclick="setFilter('known',this)">📌 등록 장비</button>
-  <button class="f-btn" style="margin-left:auto;background:var(--green);color:#fff;border-color:var(--green)" onclick="exportCSV()">⬇ CSV 내보내기</button>
+  <button class="f-btn" style="margin-left:auto" onclick="exportXLSX()">⬇ XLSX</button>
+  <button class="f-btn" style="background:var(--green);color:#fff;border-color:var(--green)" onclick="exportCSV()">⬇ CSV</button>
 </div>
 <input class="search-inp" id="search" type="text" placeholder="IP, MAC, 포트, 레이블로 검색…" oninput="renderTable()">
 
@@ -562,6 +563,27 @@ function exportCSV() {
   a.href = url; a.download = `idrac_scan_${ts}.csv`;
   document.body.appendChild(a); a.click();
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+}
+
+async function exportXLSX() {
+  if (!hosts.length) { alert('스캔 결과가 없습니다.'); return; }
+  try {
+    const r = await fetch('/api/export/xlsx', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ hosts })
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert(e.error || 'XLSX 생성 실패'); return;
+    }
+    const blob = await r.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    const ts   = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    a.href = url; a.download = `idrac_scan_${ts}.xlsx`;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+  } catch (e) { alert(e.message); }
 }
 
 function restoreScanResults() {

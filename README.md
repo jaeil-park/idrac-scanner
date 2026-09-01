@@ -131,14 +131,24 @@ docker pull ghcr.io/jaeil-park/idrac-scanner:latest
 
 ### racadm 설치 (선택)
 
-Dell iDRAC Tools tarball을 프로젝트 루트에 추가 후 로컬 빌드:
+ghcr 이미지(GitHub Actions 빌드)는 Dell 라이선스상 tarball을 포함할 수 없어
+**Redfish 전용 모드**입니다. `racadm` 엔진 프리셋(커스텀 racadm 등)을 쓰려면
+tarball이 있는 곳에서 **직접 빌드**해야 합니다.
 
 ```bash
-cp /path/to/Dell-iDRACTools-Web-LX-*.tar.gz .
-docker compose build
+# Docker 호스트에서
+git clone https://github.com/jaeil-park/idrac-scanner.git && cd idrac-scanner
+cp /path/to/Dell-iDRACTools-Web-LX-*.tar.gz .     # tarball을 빌드 컨텍스트에 배치
+docker build -t idrac-scanner:latest .
+docker run --rm idrac-scanner:latest racadm --version   # 설치 확인
 ```
 
-tarball 없이 빌드하면 **Redfish API 전용 모드**로 동작합니다.
+그 후 Portainer 스택 / compose 의 이미지를 `idrac-scanner:latest` (로컬)로 두고
+**Re-pull 없이** 재배포합니다.
+
+> Redfish만으로도 NTP·DNS·SNMP·Syslog·이메일·사용자 비밀번호·전원·BIOS 부팅 모드
+> 프리셋은 모두 동작합니다. 엔진을 **"Redfish만"** 으로 선택하세요.
+> tarball 없이 빌드하면 자동으로 Redfish 전용 모드로 동작합니다.
 
 ---
 
