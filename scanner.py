@@ -1180,9 +1180,10 @@ def scan_generator(network: str, mode: str):
                    msg=f"포트 스캔 중… ({len(hosts)}개, 443/623/5900)")
 
         lock = threading.Lock()
+        missed: list[str] = []
 
-        def port_scan_host(ip):
-            ports = open_ports(ip, [443, 5900, 623, 80], timeout=1.5)
+        def port_scan_host(ip, timeout=1.5):
+            ports = open_ports(ip, [443, 5900, 623, 80], timeout=timeout)
             if not ports:
                 return None
             is_id, note, svc_tag, model = fingerprint_idrac(ip) if 443 in ports or 80 in ports else (False, "", "", "")
@@ -1192,16 +1193,30 @@ def scan_generator(network: str, mode: str):
                     "is_dell": is_dell_mac(mac) if mac else False,
                     "service_tag": svc_tag, "model": model}
 
-        def scan_batch(host_list):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=300) as ex:
-                for res in ex.map(port_scan_host, host_list):
+        def scan_batch(host_list, timeout=1.5, workers=300, collect_missed=False):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                for ip, res in zip(host_list,
+                                   ex.map(lambda x: port_scan_host(x, timeout), host_list)):
                     if res and (res["is_idrac"] or res["is_dell"] or 623 in res["open_ports"]):
                         with lock:
                             found.append(res)
                         yield res
+                    elif collect_missed and res is None:
+                        missed.append(ip)
 
-        for res in scan_batch(hosts):
+        for res in scan_batch(hosts, collect_missed=True):
             yield sse("found", host=res, percent=90)
+
+        # 결과가 나온 /24 대역의 미탐지 호스트를 느슨한 타임아웃으로 1회 재시도
+        # (라우팅 경유 iDRAC이 첫 스윕에서 TCP 타임아웃으로 누락되는 경우 보정)
+        live_prefixes = {".".join(h["ip"].split(".")[:3]) for h in found if h.get("ip")}
+        retry_hosts = [ip for ip in missed
+                       if ".".join(ip.split(".")[:3]) in live_prefixes]
+        if retry_hosts:
+            yield sse("progress", step="portscan_retry", percent=93,
+                       msg=f"누락 가능 호스트 재확인… ({len(retry_hosts)}개)")
+            for res in scan_batch(retry_hosts, timeout=3.0, workers=80):
+                yield sse("found", host=res, percent=95)
 
     # service_tag 미획득 iDRAC 장비를 순차적으로 재시도 (세션 완전 해소 후)
     retry_targets = [h for h in found if h.get("is_idrac") and not h.get("service_tag")]
