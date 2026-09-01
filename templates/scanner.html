@@ -948,9 +948,12 @@ function renderTable() {
     const parentLabel = h.parent_idrac && !kn
       ? `<div style="font-size:.7rem;color:#a371f7;margin-top:2px">iDRAC: ${h.parent_idrac}</div>` : '';
     const httpsUrl = `https://${h.ip}`;
+    const needAuth = !h.service_tag && (h.note||'').includes('인증필요');
     const svcTag  = h.service_tag
       ? `<span class="sn-link" style="font-family:monospace;color:var(--accent);font-weight:700;cursor:pointer;border-bottom:1px dashed rgba(56,139,253,.5)" title="클릭 → 하드웨어 정보" onclick="openHwModal('${h.ip}')">${esc(h.service_tag)}</span>`
-      : (h.is_idrac ? `<span class="sn-link" style="color:var(--muted);cursor:pointer;border-bottom:1px dashed var(--bdr)" title="하드웨어 정보 조회" onclick="openHwModal('${h.ip}')">🔍 HW</span>` : '<span style="color:var(--muted)">—</span>');
+      : (h.is_idrac
+          ? `<span class="sn-link" style="color:${needAuth?'var(--yellow)':'var(--muted)'};cursor:pointer;border-bottom:1px dashed var(--bdr)" title="${needAuth?'자격증명 필요 — 일괄 설정에서 자격증명 풀 등록':'하드웨어 정보 조회'}" onclick="openHwModal('${h.ip}')">${needAuth?'🔒 인증':'🔍 HW'}</span>`
+          : '<span style="color:var(--muted)">—</span>');
     const model   = h.model ? `<span style="font-size:.73rem;color:var(--txt)">${esc(h.model)}</span>` : '<span style="color:var(--muted);font-size:.73rem">—</span>';
 
     return `<tr class="${rowCls}" id="row-${h.ip.replace(/\./g,'_')}">

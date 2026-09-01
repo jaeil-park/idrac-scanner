@@ -277,9 +277,9 @@ body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:
     </div>
     <div class="panel-footer">
       <div style="font-size:.74rem; color:var(--muted); margin-bottom:8px">
-        자격증명 — <span style="color:var(--green)">●</span> IP별 저장됨 &nbsp; <span style="color:var(--bdr)">●</span> 기본값(root/calvin)
+        자격증명 — <span style="color:var(--green)">●</span> IP별 저장 우선, 실패 시 <b>풀</b> → root/calvin 순
       </div>
-      <button class="btn btn-ghost btn-full btn-sm" onclick="openCredModal(null)">+ 공통 자격증명 설정</button>
+      <button class="btn btn-ghost btn-full btn-sm" onclick="openPoolModal()">🔑 자격증명 풀 관리</button>
     </div>
   </div>
 
@@ -492,6 +492,26 @@ body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:
     <div class="modal-btns">
       <button class="btn btn-ghost" onclick="closeModal('cred-overlay')">취소</button>
       <button class="btn btn-primary" onclick="saveCred()">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 자격증명 풀 모달 ───────────────────────────────── -->
+<div class="overlay" id="pool-overlay">
+  <div class="modal" style="width:520px">
+    <h3>자격증명 풀 <span style="font-size:.72rem;color:var(--muted);font-weight:400">— 스캔·HW 조회 시 위에서부터 시도</span></h3>
+    <div class="info-box">IP별로 저장된 자격증명이 우선이며, 실패하면 여기 등록된 계정을 순서대로 시도합니다.
+      환경변수 <code>IDRAC_FALLBACK_CREDS</code> 및 root/calvin 은 그다음 자동 시도됩니다.</div>
+    <div id="pool-list"><div class="empty">등록된 항목 없음</div></div>
+    <hr class="divider">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div class="field" style="margin:0"><label>사용자명</label><input id="pool-user" placeholder="administrator"></div>
+      <div class="field" style="margin:0"><label>비밀번호</label><input id="pool-pass" type="password"></div>
+    </div>
+    <div class="field" style="margin-top:8px"><label>메모 (선택)</label><input id="pool-label" placeholder="예: 신규 납품 서버 공통 PW"></div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('pool-overlay')">닫기</button>
+      <button class="btn btn-primary" onclick="addPoolCred()">+ 추가</button>
     </div>
   </div>
 </div>
@@ -1060,6 +1080,65 @@ async function saveCred() {
   });
   await loadCreds();
   closeModal('cred-overlay');
+}
+
+// ── 자격증명 풀 ────────────────────────────────────────
+let poolCreds = [];
+
+async function openPoolModal() {
+  document.getElementById('pool-overlay').classList.add('show');
+  await loadPoolCreds();
+}
+async function loadPoolCreds() {
+  try {
+    poolCreds = await (await fetch('/api/cred_pool')).json();
+    renderPoolCreds();
+  } catch (e) {}
+}
+function renderPoolCreds() {
+  const el = document.getElementById('pool-list');
+  if (!poolCreds.length) { el.innerHTML = '<div class="empty">등록된 항목 없음</div>'; return; }
+  el.innerHTML = poolCreds.map(c => `
+    <div class="target-item" style="cursor:default">
+      <input type="checkbox" class="target-chk" ${c.enabled ? 'checked' : ''}
+        onchange="togglePoolCred(${c.id}, this.checked)" title="사용 여부">
+      <div style="flex:1;min-width:0">
+        <div style="font-family:monospace;font-size:.85rem">${esc(c.username)}</div>
+        ${c.label ? `<div class="target-lbl">${esc(c.label)}</div>` : ''}
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="delPoolCred(${c.id})">🗑</button>
+    </div>`).join('');
+}
+async function addPoolCred() {
+  const username = document.getElementById('pool-user').value.trim();
+  const password = document.getElementById('pool-pass').value;
+  const label    = document.getElementById('pool-label').value.trim();
+  if (!username) { alert('사용자명을 입력하세요'); return; }
+  const r = await fetch('/api/cred_pool', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ username, password, label })
+  });
+  if (r.ok) {
+    document.getElementById('pool-user').value = '';
+    document.getElementById('pool-pass').value = '';
+    document.getElementById('pool-label').value = '';
+    loadPoolCreds();
+  } else {
+    const e = await r.json().catch(() => ({}));
+    alert(e.error || '추가 실패');
+  }
+}
+async function togglePoolCred(id, enabled) {
+  await fetch(`/api/cred_pool/${id}`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ enabled })
+  });
+  loadPoolCreds();
+}
+async function delPoolCred(id) {
+  if (!confirm('이 자격증명을 삭제할까요?')) return;
+  await fetch(`/api/cred_pool/${id}`, { method: 'DELETE' });
+  loadPoolCreds();
 }
 
 // ── 프리셋 편집기 ──────────────────────────────────────

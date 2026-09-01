@@ -327,6 +327,15 @@ def init_db():
                 k TEXT PRIMARY KEY,
                 v TEXT NOT NULL DEFAULT ''
             );
+
+            CREATE TABLE IF NOT EXISTS cred_pool (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                username   TEXT NOT NULL DEFAULT '',
+                password   TEXT NOT NULL DEFAULT '',
+                label      TEXT NOT NULL DEFAULT '',
+                enabled    INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
         """)
     # 기존 DB 컬럼 마이그레이션
     with sqlite3.connect(DB_PATH) as c:
@@ -405,12 +414,30 @@ def _global_auth_check():
 # ── 유틸 ──────────────────────────────────────────────────────────
 
 DELL_OUIS = {
-    "00:0B:DB", "00:14:22", "00:1A:A0", "00:1E:C9", "00:21:9B",
-    "00:22:19", "00:23:AE", "00:24:E8", "00:26:B9",
-    "14:18:77", "18:66:DA", "24:6E:96", "34:17:EB", "3C:2C:54",
-    "44:A8:42", "54:BF:64", "78:2B:CB", "84:8F:69", "88:36:6C",
-    "B0:83:FE", "B8:CA:3A", "D0:94:66", "EC:F4:BB", "F0:1F:AF",
-    "F4:8E:38", "F8:BC:12",
+    "00:06:5B", "00:08:74", "00:0B:DB", "00:0D:56", "00:0F:1F",
+    "00:11:43", "00:12:3F", "00:13:72", "00:14:22", "00:15:C5",
+    "00:16:F0", "00:18:8B", "00:19:B9", "00:1A:A0", "00:1C:23",
+    "00:1D:09", "00:1E:4F", "00:1E:C9", "00:21:70", "00:21:9B",
+    "00:22:19", "00:23:AE", "00:24:E8", "00:25:64", "00:26:B9",
+    "00:B0:D0", "00:C0:4F", "10:7D:1A", "10:98:36", "14:18:77",
+    "14:9E:CF", "14:B3:1F", "14:FE:B5", "18:03:73", "18:66:DA",
+    "18:A9:9B", "18:DB:F2", "18:FB:7B", "1C:40:24", "20:04:0F",
+    "24:6E:96", "24:B6:FD", "28:F1:0E", "2C:EA:7F", "34:17:EB",
+    "34:48:ED", "34:E6:D7", "38:2C:4A", "38:68:DD", "3C:2C:30",
+    "3C:2C:54", "3C:D9:2B", "44:A8:42", "48:4D:7E", "4C:76:25",
+    "4C:D9:8F", "50:9A:4C", "50:9A:CC", "54:48:10", "54:9F:35",
+    "54:BF:64", "5C:26:0A", "5C:F9:DD", "64:00:6A", "64:9D:99",
+    "6C:2B:59", "6C:3C:8C", "6C:FE:54", "70:B5:E8", "74:52:19",
+    "74:86:7A", "74:86:E2", "74:E6:E2", "78:2B:CB", "78:45:C4",
+    "80:18:44", "80:8F:1D", "84:2B:2B", "84:7B:EB", "84:8F:69",
+    "88:36:6C", "8C:47:BE", "90:B1:1C", "94:10:5A", "98:40:BB",
+    "98:90:96", "A4:1F:72", "A4:4C:C8", "A4:BB:6D", "AC:1F:6B",
+    "B0:7B:25", "B0:83:FE", "B4:45:06", "B8:2A:72", "B8:59:9F",
+    "B8:AC:6F", "B8:CA:3A", "BC:30:5B", "C8:1F:66", "D0:43:1E",
+    "D0:67:E5", "D0:94:66", "D4:81:D7", "D4:AE:52", "D4:BE:D9",
+    "E0:D8:48", "E4:43:4B", "E4:F0:04", "EC:2A:72", "EC:F4:BB",
+    "F0:1F:AF", "F0:4D:A2", "F0:D4:E2", "F4:02:70", "F4:8E:38",
+    "F8:8A:3C", "F8:B1:56", "F8:BC:12", "F8:DB:88", "FC:15:B4",
 }
 IDRAC_PORTS = [443, 5900, 80, 623]
 # 동일 MAC이 이 개수 이상 IP에서 나타나면 게이트웨이/라우터 MAC으로 판단
@@ -570,26 +597,47 @@ def _load_fallback_creds() -> list:
     return [("root", "calvin")]
 
 
+def _load_pool_creds() -> list:
+    """cred_pool 테이블에 저장된 사용 가능(enabled) 자격증명 목록."""
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            rows = c.execute(
+                "SELECT username, password FROM cred_pool WHERE enabled=1 ORDER BY id"
+            ).fetchall()
+        return [(r[0], r[1]) for r in rows if r[0]]
+    except Exception:
+        return []
+
+
+def _candidate_auths(ip: str) -> list:
+    """IP에 시도할 (user,pass) 후보 목록 (중복 제거):
+    무인증 → IP별 저장값 → 자격증명 풀 → 환경변수 폴백."""
+    cred = _get_cred(ip)
+    out: list = [None, (cred["username"], cred["password"])]
+    for dc in _load_pool_creds() + _load_fallback_creds():
+        t = tuple(dc)
+        if t not in out:
+            out.append(t)
+    return out
+
+
 def _fetch_system_info(ip: str) -> dict:
     """Redfish에서 서비스 태그(SKU)와 모델명을 가져온다.
     인증 없이 먼저 시도 → 저장된 자격증명 → 알려진 기본값 순으로 fallback."""
-    result = {"service_tag": "", "model": ""}
+    result = {"service_tag": "", "model": "", "auth_failed": False}
 
-    cred = _get_cred(ip)  # DB 저장값 or root/calvin
-    _DEFAULT_CREDS = _load_fallback_creds()
-
-    auth_list = [None, (cred["username"], cred["password"])]
-    for dc in _DEFAULT_CREDS:
-        if dc != (cred["username"], cred["password"]):
-            auth_list.append(dc)
+    auth_list = _candidate_auths(ip)
 
     paths = ["/redfish/v1/Systems/System.Embedded.1", "/redfish/v1/Systems/1"]
+    saw_401 = False
 
     for auth in auth_list:
         for path in paths:
             try:
                 r = _req.get(f"https://{ip}{path}",
                              auth=auth, verify=False, timeout=6.0)
+                if r.status_code in (401, 403):
+                    saw_401 = True
                 if r.status_code == 200:
                     obj = r.json()
                     result["service_tag"] = str(obj.get("SKU") or "").strip()
@@ -602,6 +650,8 @@ def _fetch_system_info(ip: str) -> dict:
         try:
             r = _req.get(f"https://{ip}/redfish/v1/Systems",
                          auth=auth, verify=False, timeout=6.0)
+            if r.status_code in (401, 403):
+                saw_401 = True
             if r.status_code == 200:
                 for m in r.json().get("Members", []):
                     member_path = m.get("@odata.id", "")
@@ -617,19 +667,15 @@ def _fetch_system_info(ip: str) -> dict:
                             return result
         except Exception:
             pass
+    result["auth_failed"] = saw_401 and not (result["service_tag"] or result["model"])
     return result
 
 
 # ── 하드웨어 상세 정보 (Redfish) ──────────────────────────────────
 
 def _auth_candidates(ip: str) -> list:
-    """해당 IP에 시도할 (user, pass) 목록 — 저장값 → 폴백 → 무인증."""
-    cred = _get_cred(ip)
-    cands: list = [(cred["username"], cred["password"])]
-    for dc in _load_fallback_creds():
-        t = tuple(dc)
-        if t not in cands:
-            cands.append(t)
+    """해당 IP에 시도할 (user, pass) 목록 — 저장값 → 풀 → 폴백 → 무인증."""
+    cands = [a for a in _candidate_auths(ip) if a is not None]
     cands.append(None)
     return cands
 
@@ -971,12 +1017,19 @@ def _run_fw_update(q: queue.Queue, payload: dict, file_path: str,
             pass
 
 
+def _svc_note(note: str, info: dict) -> str:
+    """서비스 태그를 못 가져왔고 그 원인이 인증 실패면 note에 표시."""
+    if not (info.get("service_tag") or info.get("model")) and info.get("auth_failed"):
+        return note + " · 인증필요"
+    return note
+
+
 def fingerprint_idrac(ip: str) -> tuple[bool, str, str, str]:
     """(is_idrac, note, service_tag, model) 반환"""
     ok, note = _check_redfish(ip)
     if ok:
         info = _fetch_system_info(ip)
-        return True, note, info["service_tag"], info["model"]
+        return True, _svc_note(note, info), info["service_tag"], info["model"]
     if "Redfish" in note and "non-Dell" in note:
         return False, note, "", ""
     for scheme in ("https", "http"):
@@ -988,7 +1041,8 @@ def fingerprint_idrac(ip: str) -> tuple[bool, str, str, str]:
                 ver_m = re.search(rb"iDRAC\s*(\d+)", data, re.I)
                 ver = ver_m.group(1).decode() if ver_m else ""
                 info = _fetch_system_info(ip)
-                return True, f"iDRAC{ver} ({scheme}:page)", info["service_tag"], info["model"]
+                return True, _svc_note(f"iDRAC{ver} ({scheme}:page)", info), \
+                    info["service_tag"], info["model"]
     return False, "응답 있음 (iDRAC 아님)", "", ""
 
 
@@ -1474,6 +1528,62 @@ def api_creds_save():
 def api_creds_del(ip):
     with sqlite3.connect(DB_PATH) as c:
         c.execute("DELETE FROM credentials WHERE ip=?", (ip,))
+    return jsonify({"ok": True})
+
+
+# ─ 자격증명 풀 (스캔·HW 조회 시 순서대로 시도) ──────────────────
+
+@app.route("/api/cred_pool", methods=["GET"])
+def api_cred_pool_list():
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            rows = c.execute(
+                "SELECT id, username, label, enabled, created_at FROM cred_pool ORDER BY id"
+            ).fetchall()
+        return jsonify([{"id": r[0], "username": r[1], "label": r[2],
+                         "enabled": bool(r[3]), "created_at": r[4]} for r in rows])
+    except Exception:
+        return jsonify([])
+
+
+@app.route("/api/cred_pool", methods=["POST"])
+def api_cred_pool_add():
+    d = request.json or {}
+    user = (d.get("username") or "").strip()
+    pw   = d.get("password") or ""
+    if not user:
+        return jsonify({"error": "username 필수"}), 400
+    with sqlite3.connect(DB_PATH) as c:
+        cur = c.execute(
+            "INSERT INTO cred_pool (username, password, label, enabled) VALUES (?, ?, ?, 1)",
+            (user, pw, (d.get("label") or "").strip()))
+    return jsonify({"ok": True, "id": cur.lastrowid})
+
+
+@app.route("/api/cred_pool/<int:cid>", methods=["PUT"])
+def api_cred_pool_update(cid):
+    d = request.json or {}
+    sets, vals = [], []
+    if "enabled" in d:
+        sets.append("enabled=?"); vals.append(1 if d["enabled"] else 0)
+    if d.get("username"):
+        sets.append("username=?"); vals.append(d["username"].strip())
+    if "password" in d and d["password"] != "":
+        sets.append("password=?"); vals.append(d["password"])
+    if "label" in d:
+        sets.append("label=?"); vals.append((d.get("label") or "").strip())
+    if not sets:
+        return jsonify({"ok": True})
+    vals.append(cid)
+    with sqlite3.connect(DB_PATH) as c:
+        c.execute(f"UPDATE cred_pool SET {', '.join(sets)} WHERE id=?", vals)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/cred_pool/<int:cid>", methods=["DELETE"])
+def api_cred_pool_del(cid):
+    with sqlite3.connect(DB_PATH) as c:
+        c.execute("DELETE FROM cred_pool WHERE id=?", (cid,))
     return jsonify({"ok": True})
 
 
