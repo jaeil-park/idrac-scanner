@@ -492,12 +492,27 @@ def _ping_one(ip: str, timeout_ms: int = 400) -> bool:
         return False
 
 
+def _tcp_alive(ip: str, ports=(443, 623), timeout: float = 0.6) -> bool:
+    """ICMP를 막아둔 iDRAC 감지용 — 관리 포트 TCP 연결 시도."""
+    for p in ports:
+        try:
+            with socket.create_connection((ip, p), timeout=timeout):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _host_alive(ip: str, timeout_ms: int = 400) -> bool:
+    return _ping_one(ip, timeout_ms) or _tcp_alive(ip)
+
+
 def ping_sweep(network: str, max_workers: int = 300, timeout_ms: int = 400) -> list[str]:
     net = ipaddress.ip_network(network, strict=False)
     hosts = [str(ip) for ip in net.hosts()]
     alive = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {ex.submit(_ping_one, ip, timeout_ms): ip for ip in hosts}
+        futures = {ex.submit(_host_alive, ip, timeout_ms): ip for ip in hosts}
         for fut in concurrent.futures.as_completed(futures):
             if fut.result():
                 alive.append(futures[fut])
@@ -1170,8 +1185,30 @@ def scan_generator(network: str, mode: str):
                     yield sse("found", host=res,
                                percent=80 + int(15 * i / max(len(candidates), 1)))
 
-        for ip in others:
-            yield sse("other", host={"ip": ip, "mac": arp.get(ip, ""), "is_dell": False})
+        # others: Dell MAC이 아니어도 iDRAC 포트가 열려 있으면 핑거프린팅
+        # (MAC 미해결·OUI 목록 밖 iDRAC 회수)
+        def check_other(ip):
+            ports = open_ports(ip, IDRAC_PORTS, timeout=1.2)
+            if 443 in ports or 80 in ports:
+                is_id, note, svc_tag, model = fingerprint_idrac(ip)
+            else:
+                is_id, note, svc_tag, model = False, "", "", ""
+            mac = arp.get(ip, "") or read_arp_cache().get(ip, "")
+            return {"ip": ip, "mac": mac, "open_ports": ports,
+                    "is_idrac": is_id, "note": note, "method": "ARP+포트",
+                    "is_dell": is_dell_mac(mac) if mac else False,
+                    "service_tag": svc_tag, "model": model}
+
+        if others:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=32) as ex:
+                for res in ex.map(check_other, others):
+                    if res["is_idrac"] or res["is_dell"] or 623 in res["open_ports"]:
+                        found.append(res)
+                        _save_svc(res)
+                        yield sse("found", host=res, percent=58)
+                    else:
+                        yield sse("other", host={"ip": res["ip"], "mac": res["mac"],
+                                                 "is_dell": False})
 
     if mode in ("port", "both"):
         already = {h["ip"] for h in found}
