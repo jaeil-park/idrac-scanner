@@ -681,20 +681,23 @@ def _auth_candidates(ip: str) -> list:
 
 
 def _resolve_auth(ip: str):
-    """인증이 실제로 통하는 자격증명을 하나 찾아 반환 (없으면 None)."""
+    """인증이 통하는 자격증명을 찾아 (auth, reason) 반환.
+    reason: 'ok' | 'rejected'(모두 401/403) | 'unreachable'(HTTPS 응답 없음)."""
     test_paths = ["/redfish/v1/Managers/iDRAC.Embedded.1",
                   "/redfish/v1/Systems/System.Embedded.1"]
+    got_http = False
     for auth in _auth_candidates(ip):
         for tp in test_paths:
             try:
                 r = _req.get(f"https://{ip}{tp}", auth=auth, verify=False, timeout=6)
+                got_http = True
                 if r.status_code == 200:
-                    return auth
+                    return auth, "ok"
                 if r.status_code in (401, 403):
                     break
             except Exception:
                 pass
-    return None
+    return None, ("rejected" if got_http else "unreachable")
 
 
 def _fetch_hw_detail(ip: str, want_fw: bool = False) -> dict:
@@ -705,9 +708,15 @@ def _fetch_hw_detail(ip: str, want_fw: bool = False) -> dict:
         "system": {}, "processors": [], "memory": [], "storage": [],
         "network": [], "power": {}, "idrac": {}, "firmware": [],
     }
-    auth = _resolve_auth(ip)
+    auth, reason = _resolve_auth(ip)
     if auth is None:
-        out["error"] = "인증 실패 — 일괄 설정 페이지에서 IP별 자격증명을 저장하세요."
+        if reason == "unreachable":
+            out["error"] = f"{ip} 443(HTTPS) 응답 없음 — 방화벽/라우팅 또는 iDRAC 상태를 확인하세요."
+        else:
+            users = list(dict.fromkeys(
+                (a[0] if a else "(무인증)") for a in _auth_candidates(ip)))
+            out["error"] = ("모든 자격증명 인증 실패 — 시도한 계정: " + ", ".join(users) +
+                            " · 일괄 설정 → 🔑 자격증명 풀 관리 에 이 iDRAC 계정을 추가하세요.")
         return out
 
     def g(path: str):
